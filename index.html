@@ -205,7 +205,7 @@ const STATUS_HEX = {"Not Started":"#B0BEC5","In Progress":"#2E86C1","Need Suppor
 const PRIO_COLOR = {"High":"b-red","Medium":"b-orange","Low":"b-grey"};
 
 const LS = 'accl_task_system_v6';
-const BUILD = '4.7';
+const BUILD = '4.8';
 
 /* Super Admin self-registration is protected by this setup code.
    CHANGE IT to your own value (share only with OPEX leads). */
@@ -1395,9 +1395,12 @@ function pickAll(selKey, containerId, on){
 }
 function loadFromDict(){
   const sec = isSuper() ? (window.__assignSec || SECTIONS[0]) : current.section;
-  const role = window.__assignRole || '';
+  const roles=memberRolesOf(sec);
+  const aNorm=window.__assignRole?String(window.__assignRole).trim().toLowerCase():'';
+  const roleSel=aNorm?(roles.find(r=>String(r).trim().toLowerCase()===aNorm)||roles[0]):(roles[0]||'');
+  const rr=roleSel?String(roleSel).trim().toLowerCase():'';
   const f = window.__dictFreq || 'All';
-  const list = DB.dict.filter(d=>d.section===sec && (!role||d.role===role) && (f==='All'||d.frequency===f));
+  const list = DB.dict.filter(d=>d.section===sec && (!rr||String(d.role||'').trim().toLowerCase()===rr) && (f==='All'||d.frequency===f));
   if(!list.length){ toast('No dictionary tasks for this selection.'); return; }
   assignRows = assignRows.filter(r=>r.title.trim());
   list.forEach(d=>assignRows.push({title:d.title, estMin:d.estMin, priority:d.priority, frequency:d.frequency}));
@@ -1459,7 +1462,8 @@ function crossDictRoles(sec){
 }
 function loadCrossFromDict(){
   const cSec=crossSecSel();
-  const dNorm=window.__crossRole?String(window.__crossRole).trim().toLowerCase():'';
+  const dRole=window.__crossRole || (crossDictRoles(cSec)[0]||'');
+  const dNorm=dRole?String(dRole).trim().toLowerCase():'';
   const f=window.__crossDictFreq||'All';
   const list=DB.dict.filter(d=>d.section===cSec && (!dNorm||String(d.role||'').trim().toLowerCase()===dNorm) && (f==='All'||d.frequency===f));
   if(!list.length){ toast('No dictionary tasks for this selection.'); return; }
