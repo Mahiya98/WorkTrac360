@@ -205,7 +205,7 @@ const STATUS_HEX = {"Not Started":"#B0BEC5","In Progress":"#2E86C1","Need Suppor
 const PRIO_COLOR = {"High":"b-red","Medium":"b-orange","Low":"b-grey"};
 
 const LS = 'accl_task_system_v6';
-const BUILD = '4.6';
+const BUILD = '4.7';
 
 /* Super Admin self-registration is protected by this setup code.
    CHANGE IT to your own value (share only with OPEX leads). */
@@ -1449,8 +1449,37 @@ function submitAssign(){
 let crossRows=[];
 function addCrossRow(){ crossRows.push({title:'',estMin:30,priority:'Medium',frequency:'One-time'}); render(); }
 function removeCrossRow(i){ crossRows.splice(i,1); if(!crossRows.length) addCrossRow(); else render(); }
+function crossSecSel(){ return window.__crossSec || (SECTIONS.indexOf(current.section)>=0 ? current.section : SECTIONS[0]); }
+function crossDictRoles(sec){
+  const s=x=>String(x==null?'':x).trim().toLowerCase();
+  const map={};
+  DB.dict.filter(d=>d.section===sec).forEach(d=>{ if(d.role){ const k=s(d.role); if(!map[k]) map[k]=d.role; } });
+  DB.users.filter(u=>u.section===sec).forEach(u=>{ if(u.role){ const k=s(u.role); if(!map[k]) map[k]=u.role; } });
+  return Object.keys(map).sort().map(k=>map[k]);
+}
+function loadCrossFromDict(){
+  const cSec=crossSecSel();
+  const dNorm=window.__crossRole?String(window.__crossRole).trim().toLowerCase():'';
+  const f=window.__crossDictFreq||'All';
+  const list=DB.dict.filter(d=>d.section===cSec && (!dNorm||String(d.role||'').trim().toLowerCase()===dNorm) && (f==='All'||d.frequency===f));
+  if(!list.length){ toast('No dictionary tasks for this selection.'); return; }
+  crossRows=crossRows.filter(r=>r.title.trim());
+  list.forEach(d=>crossRows.push({title:d.title, estMin:d.estMin, priority:d.priority, frequency:d.frequency}));
+  if(!crossRows.length) crossRows=[{title:'',estMin:30,priority:'Medium',frequency:'One-time'}];
+  toast(list.length+' task(s) loaded from the dictionary.'); render();
+}
+function saveCrossDictFromRows(){
+  const cSec=crossSecSel();
+  const role=window.__crossRole || (crossDictRoles(cSec)[0]||'');
+  if(!role){ toast('Pick a role for the dictionary first.'); return; }
+  let n=0;
+  crossRows.forEach(r=>{ if(!r.title.trim()) return;
+    DB.dict.push({id:uid('d'), section:cSec, role, title:r.title.trim(), estMin:+r.estMin||0, priority:r.priority, frequency:r.frequency}); n++; });
+  if(!n){ toast('Add at least one task first.'); return; }
+  save(); toast(n+' task(s) saved to the dictionary.'); render();
+}
 function crossView(){
-  const cSec=window.__crossSec || (SECTIONS.indexOf(current.section)>=0 ? current.section : SECTIONS[0]);
+  const cSec=crossSecSel();
   const sups=DB.users.filter(u=>u.type==='supervisor' && u.status==='approved' && u.section===cSec)
     .sort((a,b)=>String(a.name).localeCompare(b.name));
   if(!crossRows.length) crossRows=[{title:'',estMin:30,priority:'Medium',frequency:'One-time'}];
@@ -1465,11 +1494,19 @@ function crossView(){
       <input type="date" value="${r.dueDate||dateStr(0)}" oninput="crossRows[${i}].dueDate=this.value">
       <button class="btn sm red" onclick="removeCrossRow(${i})" title="Remove">×</button>
     </div>`).join('');
+  const dictRoles=crossDictRoles(cSec);
+  const dictRole=window.__crossRole || (dictRoles[0]||'');
+  const dNorm=dictRole?String(dictRole).trim().toLowerCase():'';
+  const dictFreq=window.__crossDictFreq||'All';
+  const dictMatch=DB.dict.filter(d=>d.section===cSec && (!dNorm||String(d.role||'').trim().toLowerCase()===dNorm) && (dictFreq==='All'||d.frequency===dictFreq));
+  const dictPreview=dictMatch.length?dictMatch.map(d=>`<div class="small" style="display:flex;justify-content:space-between;border-bottom:1px solid #eef1f4;padding:4px 0">
+      <span>${esc(d.title)} <span class="muted">· ${esc(d.frequency)} · ${esc(d.priority)}</span></span><span>${d.estMin} min</span></div>`).join('')
+    :'<span class="small muted">No saved tasks for this selection.</span>';
   return `<div class="card"><h2>Cross Functional Task</h2>
     <p class="desc">Give a task to a <b>supervisor in any department</b>. The task is filed under that supervisor's department and appears in their My Tasks. You (${esc(current.name)}) keep visibility of what you raised.</p>
     <div class="row">
       <div class="field" style="min-width:200px"><label>Target department</label>
-        <select onchange="window.__crossSec=this.value;window.__crossSel=[];window.__crossSel_q='';render()">
+        <select onchange="window.__crossSec=this.value;window.__crossSel=[];window.__crossSel_q='';window.__crossRole='';window.__crossDictFreq='';render()">
           ${SECTIONS.map(s=>`<option ${s===cSec?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
       <div class="field" style="min-width:250px"><label>Assign to supervisor(s)</label>
         ${pickerTools('crossMember','__crossSel')}
@@ -1477,16 +1514,30 @@ function crossView(){
       <div class="field" style="min-width:150px"><label>Shift</label>
         <select id="crossShift">${SHIFTS.map(s=>`<option>${s}</option>`).join('')}</select></div>
     </div>
+    <h3>Work dictionary — ${esc(cSec)}</h3>
+    <p class="desc">Reuse tasks you gave before. Save the rows below, then load them next time.</p>
+    <div class="row">
+      <div class="field" style="min-width:200px"><label>Role (dictionary)</label>
+        <select onchange="window.__crossRole=this.value;render()">${dictRoles.map(r=>`<option ${r===dictRole?'selected':''}>${esc(r)}</option>`).join('')||'<option value="">— none —</option>'}</select></div>
+      <div class="field" style="min-width:150px"><label>Frequency</label>
+        <select onchange="window.__crossDictFreq=this.value;render()">
+          <option ${dictFreq==='All'?'selected':''}>All</option>
+          ${FREQ.map(f=>`<option ${dictFreq===f?'selected':''}>${f}</option>`).join('')}
+        </select></div>
+      <button class="btn" onclick="loadCrossFromDict()">⬇ Load ${dictMatch.length} task(s)</button>
+    </div>
+    <div style="margin:10px 0 4px">${dictPreview}</div>
     <h3>Tasks to assign</h3>
     <div class="taskrow small muted" style="font-weight:600"><div>Task title</div><div>Est. min</div><div>Priority</div><div>Frequency</div><div>Due date</div><div></div></div>
     ${rowsHtml}
     <button class="btn ghost sm" onclick="addCrossRow()">+ Add another task</button>
     <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
     <button class="btn" onclick="submitCross()">Assign cross-functional task &amp; notify</button>
+    <button class="btn ghost" onclick="saveCrossDictFromRows()">Save these as department task list</button>
   </div>`;
 }
 function submitCross(){
-  const cSec=window.__crossSec || (SECTIONS.indexOf(current.section)>=0 ? current.section : SECTIONS[0]);
+  const cSec=crossSecSel();
   const supIds=(window.__crossSel||[]).slice();
   const rows=crossRows.filter(r=>r.title.trim());
   const shiftEl=document.getElementById('crossShift');
