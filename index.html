@@ -205,7 +205,7 @@ const STATUS_HEX = {"Not Started":"#B0BEC5","In Progress":"#2E86C1","Need Suppor
 const PRIO_COLOR = {"High":"b-red","Medium":"b-orange","Low":"b-grey"};
 
 const LS = 'accl_task_system_v6';
-const BUILD = '4.8';
+const BUILD = '4.9';
 
 /* Super Admin self-registration is protected by this setup code.
    CHANGE IT to your own value (share only with OPEX leads). */
@@ -259,6 +259,7 @@ function save(){
   if(syncing) return;
   if(isBlankDB()) return;
   dbVersion++;
+  setSyncStatus('saving');
   clearTimeout(saveTimer);
   saveTimer=setTimeout(syncSave, 180);
 }
@@ -311,26 +312,34 @@ function mergeRemote(server){
   out.seq=seq;
   DB=out;
 }
-let saving=false;
+let saving=false, savePending=false;
 async function syncSave(){
-  const u=apiUrl(); if(!u || saving) return;
+  const u=apiUrl(); if(!u) return;
   if(isBlankDB()) return;
-  saving=true;
+  if(saving){ savePending=true; return; }   /* queue it instead of dropping the change */
+  saving=true; setSyncStatus('saving');
   try{
-    /* 1) pull the latest server copy and merge it in (no data loss) */
     const r=await fetch(u+'?action=load&token='+encodeURIComponent(apiToken()));
     const j=await r.json();
-    /* Without a readable server copy we cannot merge safely — never post blind. */
-    if(!(j&&j.ok&&j.db)){ API_OK=false; API_ERR='sheet unreadable - save skipped'; saving=false; return; }
-    mergeRemote(j.db);
-    if(isBlankDB()){ saving=false; return; }
-    /* 2) write the merged superset */
-    const pr=await fetch(u,{method:'POST',body:JSON.stringify({token:apiToken(),action:'save',db:DB,sentVersion:dbVersion,baseRev:(DB.seq&&DB.seq.rev)||0})});
-    const pj=await pr.json();
-    if(pj&&pj.ok){ lastServerVersion=dbVersion; if(DB.seq) DB.seq.rev=pj.rev; if(typeof pj.ts==='number') lastSheetTs=pj.ts; API_OK=true; API_AT=Date.now(); API_ERR=''; }
-    else { API_OK=false; API_ERR=(pj&&pj.error)||'save failed'; }
+    if(!(j&&j.ok&&j.db)){ API_OK=false; API_ERR='sheet unreadable - save skipped'; }
+    else{
+      mergeRemote(j.db);
+      if(!isBlankDB()){
+        const pr=await fetch(u,{method:'POST',body:JSON.stringify({token:apiToken(),action:'save',db:DB,sentVersion:dbVersion,baseRev:(DB.seq&&DB.seq.rev)||0})});
+        const pj=await pr.json();
+        if(pj&&pj.ok){ lastServerVersion=dbVersion; if(DB.seq) DB.seq.rev=pj.rev; if(typeof pj.ts==='number') lastSheetTs=pj.ts; API_OK=true; API_AT=Date.now(); API_ERR=''; }
+        else { API_OK=false; API_ERR=(pj&&pj.error)||'save failed'; }
+      }
+    }
   }catch(e){ API_OK=false; API_ERR=String((e&&e.message)||e); }
-  saving=false;
+  saving=false; setSyncStatus(API_OK?'saved':'error');
+  if(savePending){ savePending=false; syncSave(); }
+}
+function setSyncStatus(s){
+  const el=document.getElementById('syncState'); if(!el) return;
+  const t=new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+  el.textContent = s==='saving'?'Saving…':(s==='saved'?('Saved '+t):(s==='error'?'Not saved':''));
+  el.style.color = s==='error'?'#C0392B':'var(--muted)';
 }
 function pushNow(){ syncSave(); }
 /* Google Sheets returns numeric enroll IDs as numbers and dates as Date objects.
@@ -442,9 +451,10 @@ async function apiLoad(){
 }
 /* ---- Fast sync: rev-aware check, focus refresh, manual sync ---- */
 function busyInput(){
-  if(document.getElementById('modalBg')) return true;
-  const ae=document.activeElement;
-  return !!(ae && /^(INPUT|SELECT|TEXTAREA)$/.test(ae.tagName));
+  /* Only pause sync when the user is typing in the main page (a re-render would
+     steal focus). Inputs inside a modal are safe to keep in sync. */
+  const ae=document.activeElement; const app=document.getElementById('app');
+  return !!(ae && app && app.contains(ae) && /^(INPUT|SELECT|TEXTAREA)$/.test(ae.tagName));
 }
 /* Cheap check: only fetch full data when the server revision changed. */
 async function smartSync(){
@@ -483,7 +493,7 @@ function scheduleSyncLoop(){
   pollTimer=setInterval(()=>{
     if(!current || !apiUrl() || document.hidden) return;
     smartSync();
-  }, 15000);
+  }, 8000);
 }
 document.addEventListener('visibilitychange',()=>{ if(!document.hidden && current && apiUrl()) smartSync(); });
 window.addEventListener('focus',()=>{ if(current && apiUrl()) smartSync(); });
@@ -827,6 +837,7 @@ function shell(){
     <div class="who"><div class="avatar">${esc(initials(current.name))}</div>
       <div class="nm">${esc(current.name)}<small>${typeBadge(current.type)} ${esc(current.section)} · ${esc(current.role)}</small></div></div>
     ${canInstall?'<button class="btn ghost sm" onclick="installApp()" title="Install app">Install</button>':''}
+    <span id="syncState" class="small muted"></span>
     <button class="btn ghost sm" onclick="manualSync()" title="${API_ERR?('Last sync error: '+esc(API_ERR)):'Sync now'}">⟳ Sync${API_OK?'':' •'}</button>
     <button class="btn ghost sm" onclick="openRestore()" title="Restore data">Restore</button>
     <button class="btn ghost sm" onclick="logout()">Log out</button>
