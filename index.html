@@ -205,7 +205,7 @@ const STATUS_HEX = {"Not Started":"#B0BEC5","In Progress":"#2E86C1","Need Suppor
 const PRIO_COLOR = {"High":"b-red","Medium":"b-orange","Low":"b-grey"};
 
 const LS = 'accl_task_system_v6';
-const BUILD = '4.9';
+const BUILD = '5.0';
 
 /* Super Admin self-registration is protected by this setup code.
    CHANGE IT to your own value (share only with OPEX leads). */
@@ -1008,7 +1008,7 @@ function superDashboardView(){
       <div class="s">${lateP} task(s) completed late</div></div>
   </div>
 
-  <div class="grid g2">
+  <div>
     <div class="card"><h2>Role-wise workload</h2>
       <p class="desc">Load = assigned minutes ÷ capacity (${perDay} min × ${pDays} day(s) × members).</p>
       ${roleLoadRows}
@@ -1016,17 +1016,6 @@ function superDashboardView(){
         <span style="color:#E67E22">●</span> Below 80%: underloaded &nbsp;&nbsp;
         <span style="color:#2E86C1">●</span> 80–100%: balanced &nbsp;&nbsp;
         <span style="color:#C0392B">●</span> Above 100%: overloaded</div>
-    </div>
-    <div class="card"><h2>Overall performance score</h2>
-      <div class="grid g2" style="align-items:center">
-        <div>${donut(score, score>=80?'#1E8449':score>=60?'#E67E22':'#C0392B')}</div>
-        <div style="font-size:13px">
-          <div class="row" style="justify-content:space-between;padding:5px 0"><span>Completion</span><b>${completionPct}%</b></div>
-          <div class="row" style="justify-content:space-between;padding:5px 0"><span>On-time delivery</span><b>${onTimePct}%</b></div>
-          <div class="row" style="justify-content:space-between;padding:5px 0"><span>Time adherence</span><b>${adherencePct}%</b></div>
-        </div>
-      </div>
-      <p class="small muted" style="margin-top:10px">Weighted score: Completion 50% | On-time 30% | Time adherence 20%.</p>
     </div>
   </div>
 
