@@ -1,3 +1,5 @@
+
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -205,7 +207,7 @@ const STATUS_HEX = {"Not Started":"#B0BEC5","In Progress":"#2E86C1","Need Suppor
 const PRIO_COLOR = {"High":"b-red","Medium":"b-orange","Low":"b-grey"};
 
 const LS = 'accl_task_system_v6';
-const BUILD = '5.6';
+const BUILD = '4.9';
 
 /* Super Admin self-registration is protected by this setup code.
    CHANGE IT to your own value (share only with OPEX leads). */
@@ -243,15 +245,26 @@ function blankDB(){
 let DB;
 function load(){ try{ const raw=localStorage.getItem(LS); DB=raw?JSON.parse(raw):blankDB(); }catch(e){ DB=blankDB(); } if(!DB.seq) DB.seq=blankDB().seq; if(!DB.settings) DB.settings={dailyMinutes:480}; }
 
-/* ---- Backend sync: Google Sheets + Apps Script ----
-   Configure the Web App URL + token in the app's Sync dialog (top bar).
-   With no URL set, the app runs browser-only (localStorage). */
-const DEFAULT_API_URL='https://script.google.com/macros/s/AKfycbxLbPZ581xKqqhdZkRvwC69rp6vCuBipR-aqof9ZxSTVF6D61dcjPNh7hpuf6288fPQ/exec';
-const DEFAULT_API_TOKEN='CHANGE_ME_worktrac_secret';
+/* ---- Backend sync: Supabase (WorkTrac360) ----
+   Talks to Postgres RPCs wt360_load / wt360_save / wt360_ping, which mirror the
+   old Apps Script contract ({ok,rev,ts,db}). The browser uses the project's
+   anon key; a shared token gates every RPC. */
+const SUPABASE_URL='https://ixyzhxtphbnglcpktsce.supabase.co';
+const SUPABASE_ANON='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml4eXpoeHRwaGJuZ2xjcGt0c2NlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAyMzcyOTQsImV4cCI6MjEwNTgxMzI5NH0.O824BeQK99MIYo2N60quNhYyy6ANZwhRfMj12dDbGkU';
+const DEFAULT_API_URL=SUPABASE_URL;
+const DEFAULT_API_TOKEN='ACCL-WT360-7d1f4a93';
+async function sbRpc(fn, body){
+  const r=await fetch(SUPABASE_URL+'/rest/v1/rpc/'+fn,{
+    method:'POST',
+    headers:{'apikey':SUPABASE_ANON,'Authorization':'Bearer '+SUPABASE_ANON,'Content-Type':'application/json'},
+    body:JSON.stringify(body)
+  });
+  return r.json();
+}
 let API_OK=false, API_AT=0, API_ERR='';
 let syncing=false, dbVersion=0, lastServerVersion=0, skipFlush=false, orphanTaskCount=0, lastSheetTs=0, lastFullLoad=0;
 let saveTimer=null;
-function apiUrl(){ const v=localStorage.getItem('wt360_api_url'); return (v===null?DEFAULT_API_URL:v).trim(); }
+function apiUrl(){ return DEFAULT_API_URL; }
 function apiToken(){ return DEFAULT_API_TOKEN; }
 function save(){
   try{ localStorage.setItem(LS, JSON.stringify(DB)); }catch(e){}
@@ -319,14 +332,12 @@ async function syncSave(){
   if(saving){ savePending=true; return; }   /* queue it instead of dropping the change */
   saving=true; setSyncStatus('saving');
   try{
-    const r=await fetch(u+'?action=load&token='+encodeURIComponent(apiToken()));
-    const j=await r.json();
+    const j=await sbRpc('wt360_load',{p_token:apiToken()});
     if(!(j&&j.ok&&j.db)){ API_OK=false; API_ERR='sheet unreadable - save skipped'; }
     else{
       mergeRemote(j.db);
       if(!isBlankDB()){
-        const pr=await fetch(u,{method:'POST',body:JSON.stringify({token:apiToken(),action:'save',db:DB,sentVersion:dbVersion,baseRev:(DB.seq&&DB.seq.rev)||0})});
-        const pj=await pr.json();
+        const pj=await sbRpc('wt360_save',{p_token:apiToken(),p_db:DB,p_sent:dbVersion,p_base:(DB.seq&&DB.seq.rev)||0});
         if(pj&&pj.ok){ lastServerVersion=dbVersion; if(DB.seq) DB.seq.rev=pj.rev; if(typeof pj.ts==='number') lastSheetTs=pj.ts; API_OK=true; API_AT=Date.now(); API_ERR=''; }
         else { API_OK=false; API_ERR=(pj&&pj.error)||'save failed'; }
       }
@@ -382,8 +393,7 @@ async function apiLoad(){
   }
   skipFlush=false;
   try{
-    const r=await fetch(u+'?action=load&token='+encodeURIComponent(apiToken()));
-    const j=await r.json();
+    const j=await sbRpc('wt360_load',{p_token:apiToken()});
     if(j&&j.ok&&j.db){
       const srv=(k)=>Array.isArray(j.db[k])?j.db[k]:[];
       const serverEmpty = srv('users').length===0 && srv('tasks').length===0;
@@ -462,8 +472,7 @@ async function smartSync(){
   if(busyInput()) return false;
   let srvRev=null, srvTs=null;
   try{
-    const r=await fetch(u+'?action=ping&token='+encodeURIComponent(apiToken()));
-    const j=await r.json();
+    const j=await sbRpc('wt360_ping',{p_token:apiToken()});
     if(j&&j.ok && typeof j.rev==='number') srvRev=j.rev;
     if(j&&j.ok && typeof j.ts==='number') srvTs=j.ts;
   }catch(e){}
@@ -605,20 +614,15 @@ function visibleTasks(u){
   if(u.type==='supervisor') return DB.tasks.filter(t=>t.section===u.section || t.assignedById===u.id || t.assigneeId===u.id);
   return DB.tasks.filter(t=>isMyTask(t,u));
 }
-/* Tasks directly assigned to me (by account id or shared enroll). */
-function assignedToMe(t,u){
+/* A task is "mine" if it targets my account or any account sharing my enroll
+   ID (guards against duplicate registrations of the same person). */
+function isMyTask(t,u){
   u=u||current; if(!t||!u) return false;
   if(t.assigneeId===u.id) return true;
+  if(t.assignedById===u.id) return true;   /* cross-functional task I raised */
   const me=String(u.enroll||'').trim().toLowerCase(); if(!me) return false;
   const a=DB.users.find(x=>x.id===t.assigneeId);
   return !!(a && String(a.enroll||'').trim().toLowerCase()===me);
-}
-/* A task is "mine" if it is assigned to me OR I raised it cross-functionally. */
-function isMyTask(t,u){
-  u=u||current; if(!t||!u) return false;
-  if(assignedToMe(t,u)) return true;
-  if(t.assignedById===u.id) return true;   /* cross-functional task I raised */
-  return false;
 }
 function deptSupervisors(sec){ return DB.users.filter(u=>u.type==='supervisor' && u.section===sec && u.status==='approved'); }
 function rolesOf(sec){ return DB.roles.filter(r=>r.section===sec).sort((a,b)=>a.name.localeCompare(b.name)); }
@@ -643,15 +647,10 @@ let current=null, view='dashboard', taskFilter='All', authMode='signin', authMsg
 let dateBasis='due', dateFrom=dateStr(0), dateTo=dateStr(0);
 let dashPeriod='today';   /* today | week | month */
 function periodRange(){
-  const today=dateStr(0);
-  const custom=window.__dashFrom||window.__dashTo;
-  if(custom){
-    const a=window.__dashFrom||window.__dashTo, b=window.__dashTo||window.__dashFrom;
-    return a<=b?{from:a,to:b}:{from:b,to:a};
-  }
-  if(dashPeriod==='today') return {from:today,to:today};
-  if(dashPeriod==='week') return {from:dateStr(-6),to:today};
-  return {from:firstOfMonth(),to:today};
+  const to=dateStr(0);
+  if(dashPeriod==='today') return {from:to,to:to};
+  if(dashPeriod==='week') return {from:dateStr(-6),to:to};
+  return {from:firstOfMonth(),to:to};
 }
 
 /* ------------------------------- render --------------------------------- */
@@ -816,8 +815,7 @@ function logout(){ current=null; authMode='signin'; authMsg=null; render(); }
 /* --------------------------------- shell -------------------------------- */
 function shell(){
   const tabs=[['dashboard','Dashboard'],['tasks','Tasks']];
-  if(current.type!=='member'){ tabs.push(['mytasks','My Tasks']); tabs.push(['assign','Assign Task']); tabs.push(['cross','Cross Functional']); tabs.push(['techpack','Techpack']); tabs.push(['team','Team']); tabs.push(['dictionary','Roles & Dictionary']); tabs.push(['workload','Workload']); tabs.push(['reports','Reports']); }
-  else tabs.push(['techpack','Techpack']);
+  if(current.type!=='member'){ tabs.push(['mytasks','My Tasks']); tabs.push(['assign','Assign Task']); tabs.push(['cross','Cross Functional']); tabs.push(['team','Team']); tabs.push(['dictionary','Roles & Dictionary']); tabs.push(['workload','Workload']); tabs.push(['reports','Reports']); }
   if(isSuper()) tabs.push(['departments','Departments']);
   tabs.push(['notify','Notifications']);
   const myOpen=DB.tasks.filter(t=>isMyTask(t,current) && t.status!=='Done' && t.status!=='Verified').length;
@@ -834,7 +832,6 @@ function shell(){
     case 'mytasks': body=myTasksView(); break;
     case 'assign': body=assignView(); break;
     case 'cross': body=crossView(); break;
-    case 'techpack': body=techpackView(); break;
     case 'team': body=teamView(); break;
     case 'dictionary': body=dictView(); break;
     case 'workload': body=workloadView(); break;
@@ -924,9 +921,7 @@ function superDashboardView(){
   const pDays=daysBetween(pr.from,pr.to);
   const perDay=+DB.settings.dailyMinutes||480;
   const capRange=perDay*pDays;
-  const periodLabel=(window.__dashFrom||window.__dashTo)
-    ? (pr.from===pr.to ? pr.from : (pr.from+' → '+pr.to))
-    : ({today:'Today',week:'Last 7 days',month:'This month'}[dashPeriod]||'This month');
+  const periodLabel={today:'Today',week:'Last 7 days',month:'This month'}[dashPeriod]||'This month';
   let pts=DB.tasks.filter(t=>t.dueDate && t.dueDate>=pr.from && t.dueDate<=pr.to);
   if(!pts.length) pts=DB.tasks;
 
@@ -999,21 +994,12 @@ function superDashboardView(){
         <div class="small muted">${new Date().toLocaleDateString('en-GB',{day:'2-digit',month:'long',year:'numeric'})} &nbsp;|&nbsp; All departments &nbsp;|&nbsp; ${employees} employees</div>
       </div>
       <div class="row" style="align-items:center;gap:14px">
-        ${isSuper()?`
-          <div class="field" style="min-width:150px;margin:0"><label>From</label>
-            <input type="date" value="${pr.from}" onchange="window.__dashFrom=this.value;render()"></div>
-          <div class="field" style="min-width:150px;margin:0"><label>To</label>
-            <input type="date" value="${pr.to}" onchange="window.__dashTo=this.value;render()"></div>
-          <button class="btn ghost sm" onclick="window.__dashFrom='';window.__dashTo='';dashPeriod='today';render()">Today</button>
-          <button class="btn ghost sm" onclick="window.__dashFrom=firstOfMonth();window.__dashTo=dateStr(0);render()">This month</button>
-        `:`
-          <div class="field" style="min-width:150px;margin:0"><label>Period</label>
-            <select onchange="dashPeriod=this.value;window.__dashFrom='';window.__dashTo='';render()">
-              <option value="today" ${dashPeriod==='today'?'selected':''}>Today</option>
-              <option value="week" ${dashPeriod==='week'?'selected':''}>Last 7 days</option>
-              <option value="month" ${dashPeriod==='month'?'selected':''}>This month</option>
-            </select></div>
-        `}
+        <div class="field" style="min-width:150px;margin:0"><label>Period</label>
+          <select onchange="dashPeriod=this.value;render()">
+            <option value="today" ${dashPeriod==='today'?'selected':''}>Today</option>
+            <option value="week" ${dashPeriod==='week'?'selected':''}>Last 7 days</option>
+            <option value="month" ${dashPeriod==='month'?'selected':''}>This month</option>
+          </select></div>
         <div class="small muted">Last updated ${new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}</div>
       </div>
     </div>
@@ -1031,7 +1017,7 @@ function superDashboardView(){
       <div class="s">${lateP} task(s) completed late</div></div>
   </div>
 
-  <div>
+  <div class="grid g2">
     <div class="card"><h2>Role-wise workload</h2>
       <p class="desc">Load = assigned minutes ÷ capacity (${perDay} min × ${pDays} day(s) × members).</p>
       ${roleLoadRows}
@@ -1039,6 +1025,17 @@ function superDashboardView(){
         <span style="color:#E67E22">●</span> Below 80%: underloaded &nbsp;&nbsp;
         <span style="color:#2E86C1">●</span> 80–100%: balanced &nbsp;&nbsp;
         <span style="color:#C0392B">●</span> Above 100%: overloaded</div>
+    </div>
+    <div class="card"><h2>Overall performance score</h2>
+      <div class="grid g2" style="align-items:center">
+        <div>${donut(score, score>=80?'#1E8449':score>=60?'#E67E22':'#C0392B')}</div>
+        <div style="font-size:13px">
+          <div class="row" style="justify-content:space-between;padding:5px 0"><span>Completion</span><b>${completionPct}%</b></div>
+          <div class="row" style="justify-content:space-between;padding:5px 0"><span>On-time delivery</span><b>${onTimePct}%</b></div>
+          <div class="row" style="justify-content:space-between;padding:5px 0"><span>Time adherence</span><b>${adherencePct}%</b></div>
+        </div>
+      </div>
+      <p class="small muted" style="margin-top:10px">Weighted score: Completion 50% | On-time 30% | Time adherence 20%.</p>
     </div>
   </div>
 
@@ -1275,37 +1272,6 @@ function myTasksView(){
     ${taskListHtml(filteredTasks(ts))||'<div class="empty">No tasks assigned to you yet.</div>'}</div>`;
 }
 function setFilter(s){ taskFilter=s; render(); }
-/* ---- Techpack: everything assigned today + total assigned time ---- */
-function hhmm(m){ m=Math.round(+m||0); const h=Math.floor(m/60), x=m%60; return (h?h+'h ':'')+x+'m'; }
-function techpackView(){
-  const today=dateStr(0);
-  /* Personal pack: my tasks due today only — never the whole section. */
-  let ts=DB.tasks.filter(t=>assignedToMe(t,current) && normDate(t.dueDate)===today);
-  ts=ts.slice().sort((a,b)=>(+b.createdAt||0)-(+a.createdAt||0));
-  const count=ts.length;
-  const est=ts.reduce((a,t)=>a+(+t.estMin||0),0);
-  const act=ts.reduce((a,t)=>a+(+t.actualMin||0),0);
-  const scopeLabel=esc(current.name||'me');
-  const rows=ts.map(t=>{ const a=user(t.assigneeId); return `<tr>
-    <td><b>${esc(t.code)}</b><div class="small muted">${esc(t.title)}</div></td>
-    <td class="small">${esc(t.section)}<div class="small muted">${esc(t.role)}</div></td>
-    <td>${esc(a.name)}<div class="small muted">ID: ${esc(a.enroll)}</div></td>
-    <td class="small">${esc(t.shift)}</td>
-    <td>${prioBadge(t.priority)}</td>
-    <td class="small">${(+t.estMin||0)} min</td>
-    <td>${statusBadge(t.status)}</td>
-    <td class="small">${fmt(t.createdAt)}</td></tr>`; }).join('');
-  return `<div class="card"><h2>Techpack — ${scopeLabel}</h2>
-    <p class="desc">My tasks <b>due today</b> (${esc(today)}), with my total assigned time. Newest first.</p>
-    <div class="grid g3" style="margin-bottom:14px">
-      <div class="kpi2"><div class="t">My tasks due today</div><div class="n">${count}</div><div class="s">assigned to ${scopeLabel}</div></div>
-      <div class="kpi2"><div class="t">Total assigned time</div><div class="n" style="color:#2E86C1">${hhmm(est)}</div><div class="s">${est.toLocaleString()} min estimated</div></div>
-      <div class="kpi2"><div class="t">Actual logged</div><div class="n" style="color:${act>est?'#C0392B':'#1E8449'}">${hhmm(act)}</div><div class="s">${act.toLocaleString()} min actual</div></div>
-    </div>
-    <table><tr><th>Task</th><th>Department / Role</th><th>Assignee</th><th>Shift</th><th>Priority</th><th>Est. time</th><th>Status</th><th>Assigned at</th></tr>
-    ${rows||'<tr><td colspan="8" class="empty">No tasks due today.</td></tr>'}</table>
-  </div>`;
-}
 
 /* ------------------------------ assign task ----------------------------- */
 let assignRows=[];
@@ -2170,21 +2136,12 @@ function workloadView(){
 }
 
 function notifyView(){
-  const list=myNotifs().slice().sort((a,b)=>(+b.at||0)-(+a.at||0));   /* newest first */
-  if(!list.length) return `<div class="card"><h2>Notifications</h2>
-    <p class="desc">Task assignments, approvals and updates relevant to you.</p>
-    <div class="empty">No notifications.</div></div>`;
-  const groups={};
-  list.forEach(n=>{ const k=dstr(n.at); (groups[k]=groups[k]||[]).push(n); });
-  const keys=Object.keys(groups).sort().reverse();   /* latest day first */
-  const body=keys.map(k=>{
-    const rows=groups[k].map(n=>`<div class="nrow ${n.read?'':'unread'}">
+  const list=myNotifs();
+  const rows=list.map(n=>`<div class="nrow ${n.read?'':'unread'}">
       <div class="t">${esc(n.title)}</div><div class="b">${esc(n.body)}</div><div class="m">${fmt(n.at)}</div></div>`).join('');
-    return `<div class="small muted" style="margin:14px 0 4px;font-weight:700">${esc(fmtDateLabel(k))}</div>${rows}`;
-  }).join('');
   return `<div class="card"><h2>Notifications</h2>
-    <p class="desc">Task assignments, approvals and updates relevant to you — newest first.</p>
-    ${body}</div>`;
+    <p class="desc">Task assignments, approvals and updates relevant to you.</p>
+    ${rows||'<div class="empty">No notifications.</div>'}</div>`;
 }
 
 /* ------------------------------ task detail ----------------------------- */
