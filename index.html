@@ -205,7 +205,7 @@ const STATUS_HEX = {"Not Started":"#B0BEC5","In Progress":"#2E86C1","Need Suppor
 const PRIO_COLOR = {"High":"b-red","Medium":"b-orange","Low":"b-grey"};
 
 const LS = 'accl_task_system_v6';
-const BUILD = '5.3';
+const BUILD = '5.4';
 
 /* Super Admin self-registration is protected by this setup code.
    CHANGE IT to your own value (share only with OPEX leads). */
@@ -812,6 +812,7 @@ function logout(){ current=null; authMode='signin'; authMsg=null; render(); }
 function shell(){
   const tabs=[['dashboard','Dashboard'],['tasks','Tasks']];
   if(current.type!=='member'){ tabs.push(['mytasks','My Tasks']); tabs.push(['assign','Assign Task']); tabs.push(['cross','Cross Functional']); tabs.push(['techpack','Techpack']); tabs.push(['team','Team']); tabs.push(['dictionary','Roles & Dictionary']); tabs.push(['workload','Workload']); tabs.push(['reports','Reports']); }
+  else tabs.push(['techpack','Techpack']);
   if(isSuper()) tabs.push(['departments','Departments']);
   tabs.push(['notify','Notifications']);
   const myOpen=DB.tasks.filter(t=>isMyTask(t,current) && t.status!=='Done' && t.status!=='Verified').length;
@@ -1278,16 +1279,16 @@ function techpackView(){
   const count=ts.length;
   const est=ts.reduce((a,t)=>a+(+t.estMin||0),0);
   const act=ts.reduce((a,t)=>a+(+t.actualMin||0),0);
-  const scopeLabel=isSuper()?'All departments':current.section;
-  const rows=ts.map(t=>`<tr>
+  const scopeLabel=isSuper()?'All departments':(current.type==='member'?'Assigned to me':current.section);
+  const rows=ts.map(t=>{ const a=user(t.assigneeId); return `<tr>
     <td><b>${esc(t.code)}</b><div class="small muted">${esc(t.title)}</div></td>
     <td class="small">${esc(t.section)}<div class="small muted">${esc(t.role)}</div></td>
-    <td>${esc(user(t.assigneeId).name)}</td>
+    <td>${esc(a.name)}<div class="small muted">ID: ${esc(a.enroll)}</div></td>
     <td class="small">${esc(t.shift)}</td>
     <td>${prioBadge(t.priority)}</td>
     <td class="small">${(+t.estMin||0)} min</td>
     <td>${statusBadge(t.status)}</td>
-    <td class="small">${fmt(t.createdAt)}</td></tr>`).join('');
+    <td class="small">${fmt(t.createdAt)}</td></tr>`; }).join('');
   /* per-department totals (super admin) */
   const byDept={};
   ts.forEach(t=>{ (byDept[t.section]=byDept[t.section]||{n:0,est:0}); byDept[t.section].n++; byDept[t.section].est+=(+t.estMin||0); });
