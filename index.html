@@ -205,7 +205,7 @@ const STATUS_HEX = {"Not Started":"#B0BEC5","In Progress":"#2E86C1","Need Suppor
 const PRIO_COLOR = {"High":"b-red","Medium":"b-orange","Low":"b-grey"};
 
 const LS = 'accl_task_system_v6';
-const BUILD = '5.0';
+const BUILD = '5.1';
 
 /* Super Admin self-registration is protected by this setup code.
    CHANGE IT to your own value (share only with OPEX leads). */
@@ -638,10 +638,15 @@ let current=null, view='dashboard', taskFilter='All', authMode='signin', authMsg
 let dateBasis='due', dateFrom=dateStr(0), dateTo=dateStr(0);
 let dashPeriod='today';   /* today | week | month */
 function periodRange(){
-  const to=dateStr(0);
-  if(dashPeriod==='today') return {from:to,to:to};
-  if(dashPeriod==='week') return {from:dateStr(-6),to:to};
-  return {from:firstOfMonth(),to:to};
+  const today=dateStr(0);
+  const custom=window.__dashFrom||window.__dashTo;
+  if(custom){
+    const a=window.__dashFrom||window.__dashTo, b=window.__dashTo||window.__dashFrom;
+    return a<=b?{from:a,to:b}:{from:b,to:a};
+  }
+  if(dashPeriod==='today') return {from:today,to:today};
+  if(dashPeriod==='week') return {from:dateStr(-6),to:today};
+  return {from:firstOfMonth(),to:today};
 }
 
 /* ------------------------------- render --------------------------------- */
@@ -912,7 +917,9 @@ function superDashboardView(){
   const pDays=daysBetween(pr.from,pr.to);
   const perDay=+DB.settings.dailyMinutes||480;
   const capRange=perDay*pDays;
-  const periodLabel={today:'Today',week:'Last 7 days',month:'This month'}[dashPeriod]||'This month';
+  const periodLabel=(window.__dashFrom||window.__dashTo)
+    ? (pr.from===pr.to ? pr.from : (pr.from+' → '+pr.to))
+    : ({today:'Today',week:'Last 7 days',month:'This month'}[dashPeriod]||'This month');
   let pts=DB.tasks.filter(t=>t.dueDate && t.dueDate>=pr.from && t.dueDate<=pr.to);
   if(!pts.length) pts=DB.tasks;
 
@@ -985,12 +992,21 @@ function superDashboardView(){
         <div class="small muted">${new Date().toLocaleDateString('en-GB',{day:'2-digit',month:'long',year:'numeric'})} &nbsp;|&nbsp; All departments &nbsp;|&nbsp; ${employees} employees</div>
       </div>
       <div class="row" style="align-items:center;gap:14px">
-        <div class="field" style="min-width:150px;margin:0"><label>Period</label>
-          <select onchange="dashPeriod=this.value;render()">
-            <option value="today" ${dashPeriod==='today'?'selected':''}>Today</option>
-            <option value="week" ${dashPeriod==='week'?'selected':''}>Last 7 days</option>
-            <option value="month" ${dashPeriod==='month'?'selected':''}>This month</option>
-          </select></div>
+        ${isSuper()?`
+          <div class="field" style="min-width:150px;margin:0"><label>From</label>
+            <input type="date" value="${pr.from}" onchange="window.__dashFrom=this.value;render()"></div>
+          <div class="field" style="min-width:150px;margin:0"><label>To</label>
+            <input type="date" value="${pr.to}" onchange="window.__dashTo=this.value;render()"></div>
+          <button class="btn ghost sm" onclick="window.__dashFrom='';window.__dashTo='';dashPeriod='today';render()">Today</button>
+          <button class="btn ghost sm" onclick="window.__dashFrom=firstOfMonth();window.__dashTo=dateStr(0);render()">This month</button>
+        `:`
+          <div class="field" style="min-width:150px;margin:0"><label>Period</label>
+            <select onchange="dashPeriod=this.value;window.__dashFrom='';window.__dashTo='';render()">
+              <option value="today" ${dashPeriod==='today'?'selected':''}>Today</option>
+              <option value="week" ${dashPeriod==='week'?'selected':''}>Last 7 days</option>
+              <option value="month" ${dashPeriod==='month'?'selected':''}>This month</option>
+            </select></div>
+        `}
         <div class="small muted">Last updated ${new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}</div>
       </div>
     </div>
