@@ -205,7 +205,7 @@ const STATUS_HEX = {"Not Started":"#B0BEC5","In Progress":"#2E86C1","Need Suppor
 const PRIO_COLOR = {"High":"b-red","Medium":"b-orange","Low":"b-grey"};
 
 const LS = 'accl_task_system_v6';
-const BUILD = '5.4';
+const BUILD = '5.5';
 
 /* Super Admin self-registration is protected by this setup code.
    CHANGE IT to your own value (share only with OPEX leads). */
@@ -605,15 +605,20 @@ function visibleTasks(u){
   if(u.type==='supervisor') return DB.tasks.filter(t=>t.section===u.section || t.assignedById===u.id || t.assigneeId===u.id);
   return DB.tasks.filter(t=>isMyTask(t,u));
 }
-/* A task is "mine" if it targets my account or any account sharing my enroll
-   ID (guards against duplicate registrations of the same person). */
-function isMyTask(t,u){
+/* Tasks directly assigned to me (by account id or shared enroll). */
+function assignedToMe(t,u){
   u=u||current; if(!t||!u) return false;
   if(t.assigneeId===u.id) return true;
-  if(t.assignedById===u.id) return true;   /* cross-functional task I raised */
   const me=String(u.enroll||'').trim().toLowerCase(); if(!me) return false;
   const a=DB.users.find(x=>x.id===t.assigneeId);
   return !!(a && String(a.enroll||'').trim().toLowerCase()===me);
+}
+/* A task is "mine" if it is assigned to me OR I raised it cross-functionally. */
+function isMyTask(t,u){
+  u=u||current; if(!t||!u) return false;
+  if(assignedToMe(t,u)) return true;
+  if(t.assignedById===u.id) return true;   /* cross-functional task I raised */
+  return false;
 }
 function deptSupervisors(sec){ return DB.users.filter(u=>u.type==='supervisor' && u.section===sec && u.status==='approved'); }
 function rolesOf(sec){ return DB.roles.filter(r=>r.section===sec).sort((a,b)=>a.name.localeCompare(b.name)); }
@@ -1274,12 +1279,13 @@ function setFilter(s){ taskFilter=s; render(); }
 function hhmm(m){ m=Math.round(+m||0); const h=Math.floor(m/60), x=m%60; return (h?h+'h ':'')+x+'m'; }
 function techpackView(){
   const today=dateStr(0);
-  let ts=visibleTasks(current).filter(t=>dstr(t.createdAt)===today);
+  /* Personal pack: only tasks assigned to me today — never the whole section. */
+  let ts=DB.tasks.filter(t=>assignedToMe(t,current) && dstr(t.createdAt)===today);
   ts=ts.slice().sort((a,b)=>(+b.createdAt||0)-(+a.createdAt||0));
   const count=ts.length;
   const est=ts.reduce((a,t)=>a+(+t.estMin||0),0);
   const act=ts.reduce((a,t)=>a+(+t.actualMin||0),0);
-  const scopeLabel=isSuper()?'All departments':(current.type==='member'?'Assigned to me':current.section);
+  const scopeLabel=esc(current.name||'me');
   const rows=ts.map(t=>{ const a=user(t.assigneeId); return `<tr>
     <td><b>${esc(t.code)}</b><div class="small muted">${esc(t.title)}</div></td>
     <td class="small">${esc(t.section)}<div class="small muted">${esc(t.role)}</div></td>
@@ -1289,24 +1295,16 @@ function techpackView(){
     <td class="small">${(+t.estMin||0)} min</td>
     <td>${statusBadge(t.status)}</td>
     <td class="small">${fmt(t.createdAt)}</td></tr>`; }).join('');
-  /* per-department totals (super admin) */
-  const byDept={};
-  ts.forEach(t=>{ (byDept[t.section]=byDept[t.section]||{n:0,est:0}); byDept[t.section].n++; byDept[t.section].est+=(+t.estMin||0); });
-  const deptKeys=Object.keys(byDept).sort((a,b)=>byDept[b].est-byDept[a].est);
-  const deptTable=isSuper()&&deptKeys.length?`<div class="card" style="margin-top:0"><h2>Assigned time by department (today)</h2>
-    <table><tr><th>Department</th><th>Tasks</th><th>Total assigned time</th></tr>
-    ${deptKeys.map(k=>`<tr><td><b>${esc(k)}</b></td><td>${byDept[k].n}</td><td>${hhmm(byDept[k].est)} <span class="small muted">(${byDept[k].est} min)</span></td></tr>`).join('')}
-    <tr style="font-weight:700;background:#eef3f8"><td>Total</td><td>${count}</td><td>${hhmm(est)} <span class="small muted">(${est} min)</span></td></tr></table></div>`:'';
-  return `<div class="card"><h2>Techpack — ${esc(scopeLabel)}</h2>
-    <p class="desc">All tasks assigned today (${esc(today)}), with the total assigned time. Newest assignment first.</p>
+  return `<div class="card"><h2>Techpack — ${scopeLabel}</h2>
+    <p class="desc">Tasks assigned to you today (${esc(today)}), with your total assigned time. Newest first.</p>
     <div class="grid g3" style="margin-bottom:14px">
-      <div class="kpi2"><div class="t">Tasks assigned today</div><div class="n">${count}</div><div class="s">${esc(scopeLabel)}</div></div>
+      <div class="kpi2"><div class="t">My tasks today</div><div class="n">${count}</div><div class="s">assigned to ${scopeLabel}</div></div>
       <div class="kpi2"><div class="t">Total assigned time</div><div class="n" style="color:#2E86C1">${hhmm(est)}</div><div class="s">${est.toLocaleString()} min estimated</div></div>
       <div class="kpi2"><div class="t">Actual logged</div><div class="n" style="color:${act>est?'#C0392B':'#1E8449'}">${hhmm(act)}</div><div class="s">${act.toLocaleString()} min actual</div></div>
     </div>
     <table><tr><th>Task</th><th>Department / Role</th><th>Assignee</th><th>Shift</th><th>Priority</th><th>Est. time</th><th>Status</th><th>Assigned at</th></tr>
-    ${rows||'<tr><td colspan="8" class="empty">No tasks assigned today.</td></tr>'}</table>
-  </div>${deptTable}`;
+    ${rows||'<tr><td colspan="8" class="empty">No tasks assigned to you today.</td></tr>'}</table>
+  </div>`;
 }
 
 /* ------------------------------ assign task ----------------------------- */
