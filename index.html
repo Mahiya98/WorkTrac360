@@ -205,7 +205,7 @@ const STATUS_HEX = {"Not Started":"#B0BEC5","In Progress":"#2E86C1","Need Suppor
 const PRIO_COLOR = {"High":"b-red","Medium":"b-orange","Low":"b-grey"};
 
 const LS = 'accl_task_system_v6';
-const BUILD = '5.1';
+const BUILD = '5.2';
 
 /* Super Admin self-registration is protected by this setup code.
    CHANGE IT to your own value (share only with OPEX leads). */
@@ -2132,12 +2132,21 @@ function workloadView(){
 }
 
 function notifyView(){
-  const list=myNotifs();
-  const rows=list.map(n=>`<div class="nrow ${n.read?'':'unread'}">
-      <div class="t">${esc(n.title)}</div><div class="b">${esc(n.body)}</div><div class="m">${fmt(n.at)}</div></div>`).join('');
-  return `<div class="card"><h2>Notifications</h2>
+  const list=myNotifs().slice().sort((a,b)=>(+b.at||0)-(+a.at||0));   /* newest first */
+  if(!list.length) return `<div class="card"><h2>Notifications</h2>
     <p class="desc">Task assignments, approvals and updates relevant to you.</p>
-    ${rows||'<div class="empty">No notifications.</div>'}</div>`;
+    <div class="empty">No notifications.</div></div>`;
+  const groups={};
+  list.forEach(n=>{ const k=dstr(n.at); (groups[k]=groups[k]||[]).push(n); });
+  const keys=Object.keys(groups).sort().reverse();   /* latest day first */
+  const body=keys.map(k=>{
+    const rows=groups[k].map(n=>`<div class="nrow ${n.read?'':'unread'}">
+      <div class="t">${esc(n.title)}</div><div class="b">${esc(n.body)}</div><div class="m">${fmt(n.at)}</div></div>`).join('');
+    return `<div class="small muted" style="margin:14px 0 4px;font-weight:700">${esc(fmtDateLabel(k))}</div>${rows}`;
+  }).join('');
+  return `<div class="card"><h2>Notifications</h2>
+    <p class="desc">Task assignments, approvals and updates relevant to you — newest first.</p>
+    ${body}</div>`;
 }
 
 /* ------------------------------ task detail ----------------------------- */
