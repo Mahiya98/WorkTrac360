@@ -205,7 +205,7 @@ const STATUS_HEX = {"Not Started":"#B0BEC5","In Progress":"#2E86C1","Need Suppor
 const PRIO_COLOR = {"High":"b-red","Medium":"b-orange","Low":"b-grey"};
 
 const LS = 'accl_task_system_v6';
-const BUILD = '5.5';
+const BUILD = '5.6';
 
 /* Super Admin self-registration is protected by this setup code.
    CHANGE IT to your own value (share only with OPEX leads). */
@@ -1279,8 +1279,8 @@ function setFilter(s){ taskFilter=s; render(); }
 function hhmm(m){ m=Math.round(+m||0); const h=Math.floor(m/60), x=m%60; return (h?h+'h ':'')+x+'m'; }
 function techpackView(){
   const today=dateStr(0);
-  /* Personal pack: only tasks assigned to me today — never the whole section. */
-  let ts=DB.tasks.filter(t=>assignedToMe(t,current) && dstr(t.createdAt)===today);
+  /* Personal pack: my tasks due today only — never the whole section. */
+  let ts=DB.tasks.filter(t=>assignedToMe(t,current) && normDate(t.dueDate)===today);
   ts=ts.slice().sort((a,b)=>(+b.createdAt||0)-(+a.createdAt||0));
   const count=ts.length;
   const est=ts.reduce((a,t)=>a+(+t.estMin||0),0);
@@ -1296,14 +1296,14 @@ function techpackView(){
     <td>${statusBadge(t.status)}</td>
     <td class="small">${fmt(t.createdAt)}</td></tr>`; }).join('');
   return `<div class="card"><h2>Techpack — ${scopeLabel}</h2>
-    <p class="desc">Tasks assigned to you today (${esc(today)}), with your total assigned time. Newest first.</p>
+    <p class="desc">My tasks <b>due today</b> (${esc(today)}), with my total assigned time. Newest first.</p>
     <div class="grid g3" style="margin-bottom:14px">
-      <div class="kpi2"><div class="t">My tasks today</div><div class="n">${count}</div><div class="s">assigned to ${scopeLabel}</div></div>
+      <div class="kpi2"><div class="t">My tasks due today</div><div class="n">${count}</div><div class="s">assigned to ${scopeLabel}</div></div>
       <div class="kpi2"><div class="t">Total assigned time</div><div class="n" style="color:#2E86C1">${hhmm(est)}</div><div class="s">${est.toLocaleString()} min estimated</div></div>
       <div class="kpi2"><div class="t">Actual logged</div><div class="n" style="color:${act>est?'#C0392B':'#1E8449'}">${hhmm(act)}</div><div class="s">${act.toLocaleString()} min actual</div></div>
     </div>
     <table><tr><th>Task</th><th>Department / Role</th><th>Assignee</th><th>Shift</th><th>Priority</th><th>Est. time</th><th>Status</th><th>Assigned at</th></tr>
-    ${rows||'<tr><td colspan="8" class="empty">No tasks assigned to you today.</td></tr>'}</table>
+    ${rows||'<tr><td colspan="8" class="empty">No tasks due today.</td></tr>'}</table>
   </div>`;
 }
 
