@@ -1,0 +1,10 @@
+{
+  "cleanUrls": true,
+  "functions": { "api/*.js": { "maxDuration": 60 } },
+  "routes": [
+    { "src": "/api/(.*)", "dest": "/api/$1" },
+    { "src": "/wt360", "dest": "/wt360.html" },
+    { "src": "/", "dest": "/wt360.html" },
+    { "src": "/(.*)", "dest": "/wt360.html" }
+  ]
+}

@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>WorkTrac360</title>
+<style>
+  :root {
+    --bg: #0f1420;
+    --panel: #171e2e;
+    --panel2: #1f283d;
+    --border: #2a3550;
+    --text: #e6ecf7;
+    --muted: #8fa0bd;
+    --accent: #3b82f6;
+    --ok: #22c55e;
+    --warn: #f59e0b;
+    --bad: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: .3px; }
+  .badge {
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--panel2);
+  }
+  .badge.ok { color: var(--ok); border-color: var(--ok); }
+  .badge.err { color: var(--bad); border-color: var(--bad); }
+  .wrap { padding: 18px 20px; max-width: 1200px; margin: 0 auto; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+  }
+  .card .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+  .card .value { font-size: 26px; font-weight: 700; margin-top: 6px; }
+  .toolbar { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; align-items: center; }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tabs button, button {
+    background: var(--panel2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 14px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .tabs button.active { background: var(--accent); border-color: var(--accent); }
+  button:hover { filter: brightness(1.1); }
+  input, select {
+    background: var(--panel2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 13px;
+    min-width: 200px;
+  }
+  .tablewrap { overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { background: var(--panel2); color: var(--muted); font-weight: 600; position: sticky; top: 0; }
+  tr:hover td { background: #1b2438; }
+  .muted { color: var(--muted); }
+  .empty { padding: 22px; text-align: center; color: var(--muted); }
+  .count { font-size: 12px; color: var(--muted); }
+  .pill { padding: 2px 8px; border-radius: 999px; font-size: 11px; background: var(--panel2); border: 1px solid var(--border); }
+  .pill.done, .pill.verified { color: var(--ok); border-color: var(--ok); }
+  .pill.progress { color: var(--warn); border-color: var(--warn); }
+  .pill.blocked { color: var(--bad); border-color: var(--bad); }
+  .pill.notstarted { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>WorkTrac360</h1>
+  <div style="display:flex;align-items:center;gap:10px;">
+    <span id="rev" class="muted" style="font-size:12px;"></span>
+    <span id="status" class="badge">Connecting…</span>
+    <button id="refresh">Refresh</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="cards">
+    <div class="card"><div class="label">Tasks</div><div class="value" id="c-tasks">-</div></div>
+    <div class="card"><div class="label">Roles</div><div class="value" id="c-roles">-</div></div>
+    <div class="card"><div class="label">Dict</div><div class="value" id="c-dict">-</div></div>
+    <div class="card"><div class="label">Users</div><div class="value" id="c-users">-</div></div>
+    <div class="card"><div class="label">Notify</div><div class="value" id="c-notify">-</div></div>
+    <div class="card"><div class="label">Daily Minutes</div><div class="value" id="c-min">-</div></div>
+  </div>
+
+  <div class="toolbar">
+    <div class="tabs" id="tabs">
+      <button data-tab="tasks" class="active">Tasks</button>
+      <button data-tab="roles">Roles</button>
+      <button data-tab="dict">Dict</button>
+      <button data-tab="users">Users</button>
+      <button data-tab="notify">Notify</button>
+    </div>
+    <input id="q" type="text" placeholder="Search current view…" />
+  </div>
+
+  <div class="tablewrap" id="tablewrap">
+    <div class="empty">Loading…</div>
+  </div>
+</div>
+
+<script>
+const API = '/api/wt360';
+let STATE = null;
+let currentTab = 'tasks';
+
+const $ = (id) => document.getElementById(id);
+
+async function api(action, db) {
+  const res = await fetch(API, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(db ? { action, db } : { action }),
+  });
+  return res.json();
+}
+
+function setStatus(ok, msg) {
+  const el = $('status');
+  el.textContent = msg;
+  el.className = 'badge ' + (ok ? 'ok' : 'err');
+}
+
+function esc(v) {
+  if (v === null || v === undefined) return '';
+  return String(v).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+function statusPill(s) {
+  const t = (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  let cls = '';
+  if (['done', 'verified'].includes(t)) cls = 'done';
+  else if (['inprogress'].includes(t)) cls = 'progress';
+  else if (['blocked'].includes(t)) cls = 'blocked';
+  else if (['notstarted'].includes(t)) cls = 'notstarted';
+  return `<span class="pill ${cls}">${esc(s || '')}</span>`;
+}
+
+function renderTasks(items, q) {
+  const cols = ['code', 'title', 'section', 'role', 'assigneeId', 'status', 'priority', 'dueDate', 'estMin', 'actualMin'];
+  const heads = ['Code', 'Title', 'Section', 'Role', 'Assignee', 'Status', 'Priority', 'Due', 'Est', 'Actual'];
+  return renderTable(items, cols, heads, q, (row) => {
+    const c = [];
+    c.push(esc(row.code));
+    c.push(esc(row.title));
+    c.push(esc(row.section));
+    c.push(esc(row.role));
+    c.push(esc(row.assigneeId));
+    c.push(statusPill(row.status));
+    c.push(esc(row.priority));
+    c.push(esc(row.dueDate));
+    c.push(esc(row.estMin));
+    c.push(esc(row.actualMin));
+    return `<tr>${c.map((x) => `<td>${x}</td>`).join('')}</tr>`;
+  });
+}
+
+function renderRoles(items, q) {
+  const cols = ['id', 'section', 'name'];
+  const heads = ['ID', 'Section', 'Name'];
+  return renderTable(items, cols, heads, q, (row) => `<tr><td>${esc(row.id)}</td><td>${esc(row.section)}</td><td>${esc(row.name)}</td></tr>`);
+}
+
+function renderDict(items, q) {
+  const cols = ['id', 'title', 'section', 'role', 'estMin', 'priority', 'frequency'];
+  const heads = ['ID', 'Title', 'Section', 'Role', 'Est', 'Priority', 'Frequency'];
+  return renderTable(items, cols, heads, q, (row) => `<tr><td>${esc(row.id)}</td><td>${esc(row.title)}</td><td>${esc(row.section)}</td><td>${esc(row.role)}</td><td>${esc(row.estMin)}</td><td>${esc(row.priority)}</td><td>${esc(row.frequency)}</td></tr>`);
+}
+
+function renderUsers(items, q) {
+  const cols = ['id', 'name', 'role', 'type', 'section', 'status', 'enroll'];
+  const heads = ['ID', 'Name', 'Role', 'Type', 'Section', 'Status', 'Enroll'];
+  return renderTable(items, cols, heads, q, (row) => `<tr><td>${esc(row.id)}</td><td>${esc(row.name)}</td><td>${esc(row.role)}</td><td>${esc(row.type)}</td><td>${esc(row.section)}</td><td>${esc(row.status)}</td><td>${esc(row.enroll)}</td></tr>`);
+}
+
+function renderNotify(items, q) {
+  const cols = ['at', 'title', 'to', 'read'];
+  const heads = ['At', 'Title', 'To', 'Read'];
+  return renderTable(items, cols, heads, q, (row) => {
+    const when = row.at ? new Date(row.at).toLocaleString() : '';
+    return `<tr><td>${esc(when)}</td><td>${esc(row.title)}</td><td>${esc(row.to)}</td><td>${row.read ? 'Yes' : 'No'}</td></tr>`;
+  });
+}
+
+function renderTable(items, cols, heads, q, rowFn) {
+  const ql = (q || '').toLowerCase();
+  let list = items || [];
+  if (ql) {
+    list = list.filter((row) => cols.some((c) => String(row[c] ?? '').toLowerCase().includes(ql)));
+  }
+  if (!list.length) return `<div class="empty">No results.</div>`;
+  const head = `<tr>${heads.map((h) => `<th>${esc(h)}</th>`).join('')}</tr>`;
+  return `<table><thead>${head}</thead><tbody>${list.map(rowFn).join('')}</tbody></table>`;
+}
+
+function draw() {
+  if (!STATE) return;
+  const db = STATE.db || {};
+  $('c-tasks').textContent = (db.tasks || []).length;
+  $('c-roles').textContent = (db.roles || []).length;
+  $('c-dict').textContent = (db.dict || []).length;
+  $('c-users').textContent = (db.users || []).length;
+  $('c-notify').textContent = (db.notify || []).length;
+  $('c-min').textContent = (db.settings && db.settings.dailyMinutes) || '—';
+  $('rev').textContent = 'rev ' + (STATE.rev ?? '—');
+
+  const q = $('q').value;
+  let html = '';
+  if (currentTab === 'tasks') html = renderTasks(db.tasks || [], q);
+  else if (currentTab === 'roles') html = renderRoles(db.roles || [], q);
+  else if (currentTab === 'dict') html = renderDict(db.dict || [], q);
+  else if (currentTab === 'users') html = renderUsers(db.users || [], q);
+  else if (currentTab === 'notify') html = renderNotify(db.notify || [], q);
+  $('tablewrap').innerHTML = html;
+}
+
+async function load() {
+  setStatus(false, 'Loading…');
+  const r = await api('load');
+  if (r.ok) {
+    STATE = r;
+    setStatus(true, 'Connected');
+  } else {
+    setStatus(false, 'Error');
+    $('tablewrap').innerHTML = `<div class="empty">Error: ${esc(r.error)}</div>`;
+  }
+  draw();
+}
+
+$('tabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-tab]');
+  if (!btn) return;
+  currentTab = btn.dataset.tab;
+  document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('active', b === btn));
+  draw();
+});
+
+$('q').addEventListener('input', draw);
+$('refresh').addEventListener('click', load);
+
+load();
+</script>
+</body>
+</html>
