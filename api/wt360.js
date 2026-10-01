@@ -1,4 +1,5 @@
 const { Client } = require('pg');
+const zlib = require('zlib');
 
 function dbConfig() {
   return {
@@ -74,7 +75,7 @@ function json(res, status, obj) {
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
-    let data = '';
+    const chunks = [];
     let size = 0;
     req.on('data', (c) => {
       size += c.length;
@@ -83,9 +84,20 @@ function readBody(req) {
         req.destroy();
         return;
       }
-      data += c;
+      chunks.push(c);
     });
-    req.on('end', () => resolve(data));
+    req.on('end', () => {
+      try {
+        let buf = Buffer.concat(chunks);
+        const enc = String(req.headers['content-encoding'] || '').toLowerCase();
+        if (enc === 'gzip') {
+          try { buf = zlib.gunzipSync(buf); } catch (e) { /* already decompressed upstream */ }
+        } else if (enc === 'deflate') {
+          try { buf = zlib.inflateSync(buf); } catch (e) { /* already decompressed upstream */ }
+        }
+        resolve(buf.toString('utf8'));
+      } catch (e) { reject(e); }
+    });
     req.on('error', reject);
   });
 }

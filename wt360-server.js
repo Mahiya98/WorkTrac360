@@ -1,6 +1,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 const { Client } = require('pg');
 
 try { process.loadEnvFile && process.loadEnvFile(); } catch (e) { /* no .env */ }
@@ -81,7 +82,7 @@ function send(res, status, obj) {
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
-    let data = '';
+    const chunks = [];
     let size = 0;
     req.on('data', (chunk) => {
       size += chunk.length;
@@ -90,9 +91,20 @@ function readBody(req) {
         req.destroy();
         return;
       }
-      data += chunk;
+      chunks.push(chunk);
     });
-    req.on('end', () => resolve(data));
+    req.on('end', () => {
+      try {
+        let buf = Buffer.concat(chunks);
+        const enc = String(req.headers['content-encoding'] || '').toLowerCase();
+        if (enc === 'gzip') {
+          try { buf = zlib.gunzipSync(buf); } catch (e) { /* already decompressed upstream */ }
+        } else if (enc === 'deflate') {
+          try { buf = zlib.inflateSync(buf); } catch (e) { /* already decompressed upstream */ }
+        }
+        resolve(buf.toString('utf8'));
+      } catch (e) { reject(e); }
+    });
     req.on('error', reject);
   });
 }

@@ -295,8 +295,18 @@ async function syncSave(){
   if(saving){ savePending=true; return; }
   saving=true; setSyncStatus('saving');
   try{
-    const r=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({action:'save',db:DB})});
+    const payload=JSON.stringify({action:'save',db:DB});
+    const headers={'Content-Type':'application/json'};
+    let body=payload;
+    if(typeof CompressionStream==='function'){
+      try{
+        const cs=new CompressionStream('gzip');
+        const stream=new Blob([payload]).stream().pipeThrough(cs);
+        body=await new Response(stream).arrayBuffer();
+        headers['Content-Encoding']='gzip';
+      }catch(e){}
+    }
+    const r=await fetch(API,{method:'POST',headers:headers,body:body});
     if(!r.ok) throw new Error('HTTP '+r.status);
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||'save failed');
