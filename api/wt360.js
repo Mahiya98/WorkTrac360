@@ -129,6 +129,18 @@ module.exports = async (req, res) => {
     try {
       if (action === 'ping') {
         json(res, 200, { ok: true, pong: true, time: Date.now() });
+      } else if (action === 'rev') {
+        const client = new Client(dbConfig());
+        await client.connect();
+        try {
+          const r = await client.query('SELECT rev, ts FROM wt360_state WHERE id = 1;');
+          const row = r.rows[0];
+          json(res, 200, { ok: true, rev: row ? row.rev : 0, ts: row ? row.ts : 0 });
+        } catch (e) {
+          json(res, 500, { ok: false, error: e.message });
+        } finally {
+          await client.end();
+        }
       } else if (action === 'load') {
         json(res, 200, await load());
       } else if (action === 'save') {

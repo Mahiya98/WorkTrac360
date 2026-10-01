@@ -174,6 +174,18 @@ const server = http.createServer(async (req, res) => {
       try {
         if (action === 'ping') {
           send(res, 200, { ok: true, pong: true, time: Date.now() });
+        } else if (action === 'rev') {
+          const client = new Client(dbConfig());
+          await client.connect();
+          try {
+            const r = await client.query('SELECT rev, ts FROM wt360_state WHERE id = 1;');
+            const row = r.rows[0];
+            send(res, 200, { ok: true, rev: row ? row.rev : 0, ts: row ? row.ts : 0 });
+          } catch (e) {
+            send(res, 500, { ok: false, error: e.message });
+          } finally {
+            await client.end();
+          }
         } else if (action === 'load') {
           send(res, 200, await load());
         } else if (action === 'save') {

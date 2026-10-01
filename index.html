@@ -263,6 +263,7 @@ const API='/api/wt360';
 let API_OK=false, API_AT=0, API_ERR='';
 let syncing=false;
 let saveTimer=null, saving=false, savePending=false, loaded=false;
+let lastRev=0;
 function apiUrl(){ return API; }
 
 function save(){
@@ -299,7 +300,7 @@ async function syncSave(){
     if(!r.ok) throw new Error('HTTP '+r.status);
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||'save failed');
-    API_OK=true; API_AT=Date.now(); API_ERR='';
+    API_OK=true; API_AT=Date.now(); API_ERR=''; lastRev=+j.rev||lastRev;
   }catch(e){ API_OK=false; API_ERR=String((e&&e.message)||e); }
   saving=false; setSyncStatus(API_OK?'saved':'error');
   if(savePending){ savePending=false; syncSave(); }
@@ -344,7 +345,7 @@ async function apiLoad(){
     if(!DB.settings) DB.settings={dailyMinutes:480};
     normalizeDB();
     try{ localStorage.setItem(LS, JSON.stringify(DB)); }catch(e){}
-    loaded=true; API_OK=true; API_AT=Date.now(); API_ERR='';
+    loaded=true; API_OK=true; API_AT=Date.now(); API_ERR=''; lastRev=+j.rev||0;
     syncing=false; restoreSession();
     if(savePending){ savePending=false; syncSave(); }
     return true;
@@ -371,14 +372,29 @@ async function manualSync(){
   if(ok){ render(); toast('Up to date.'); }
   else toast('Sync failed — '+(API_ERR||'check your connection'));
 }
+async function apiRev(){
+  try{
+    const r=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'rev'})});
+    if(!r.ok) return -1;
+    const j=await r.json();
+    return (j && j.ok) ? (+j.rev||0) : -1;
+  }catch(e){ return -1; }
+}
 let pollTimer=null;
 function scheduleSyncLoop(){
   if(pollTimer) clearInterval(pollTimer);
-  /* Realtime handles live updates; this is just a safety refresh. */
-  pollTimer=setInterval(()=>{
-    if(!current || !apiUrl() || document.hidden) return;
-    smartSync();
-  }, 300000);
+  /* Poll the server revision every 3s; pull the full DB only when it changed. */
+  pollTimer=setInterval(async ()=>{
+    if(document.hidden || !apiUrl() || syncing) return;
+    try{
+      const rev=await apiRev();
+      if(rev>=0 && rev!==lastRev){
+        const ok=await apiLoad();
+        if(ok && !busyInput()) render();
+      }
+    }catch(e){}
+  }, 3000);
 }
 document.addEventListener('visibilitychange',()=>{ if(!document.hidden && current && apiUrl()) smartSync(); });
 window.addEventListener('focus',()=>{ if(current && apiUrl()) smartSync(); });
