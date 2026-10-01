@@ -197,7 +197,6 @@
 <div id="app"></div>
 <div id="toast"></div>
 
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 /* =========================================================================
    ACCL — WORKTRAC360
@@ -259,41 +258,16 @@ function blankDB(){
 let DB;
 function load(){ try{ const raw=localStorage.getItem(LS); DB=raw?JSON.parse(raw):blankDB(); }catch(e){ DB=blankDB(); } if(!DB.seq) DB.seq=blankDB().seq; if(!DB.settings) DB.settings={dailyMinutes:480}; }
 
-/* ---- Backend: Supabase (normalized tables) ----
-   Local-first (localStorage) but syncs row-level changes to Postgres and receives
-   live updates over Realtime. Replaces the old JSON-blob RPC backend. */
-const SUPABASE_URL='https://lypquevajjpytpatvpem.supabase.co';
-const SUPABASE_ANON='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx5cHF1ZXZhampweXRwYXR2cGVtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA2NzA4NjgsImV4cCI6MjEwNjI0Njg2OH0.asJMGU8bOO0O8hR66PJJtfUeLzNx3mqCXqMkoQtGjdk';
-const sb = (window.supabase && window.supabase.createClient)
-  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON, {realtime:{params:{eventsPerSecond:20}}})
-  : null;
+/* ---- Backend: Azure PostgreSQL (single shared DB via /api/wt360) ---- */
+const API='/api/wt360';
 let API_OK=false, API_AT=0, API_ERR='';
-let syncing=false, dbVersion=0, lastServerVersion=0, lastFullLoad=0, rtChannel=null;
+let syncing=false;
 let saveTimer=null, saving=false, savePending=false, loaded=false;
-const SERVER={users:{},roles:{},dict:{},tasks:{},notify:{}};
-function apiUrl(){ return sb?SUPABASE_URL:''; }
-function apiToken(){ return 'supabase'; }
-
-/* ---- row <-> app-shape converters ---- */
-const eMs=v=>v?new Date(v).getTime():0;
-const eIso=n=>n?new Date(+n).toISOString():null;
-const userFromRow=r=>({id:r.id,enroll:r.enroll==null?'':String(r.enroll),name:r.name||'',section:r.section||'',role:r.role||'',type:r.type||'member',status:r.status||'pending',updatedAt:eMs(r.updated_at)});
-const userToRow=u=>({id:u.id,enroll:u.enroll==null?null:String(u.enroll),name:u.name||'',section:u.section||null,role:u.role||null,type:u.type||'member',status:u.status||'pending'});
-const roleFromRow=r=>({id:r.id,section:r.section,name:r.name});
-const roleToRow=r=>({id:r.id,section:r.section,name:r.name});
-const dictFromRow=d=>({id:d.id,section:d.section,role:d.role,title:d.title,estMin:+d.est_min||0,priority:d.priority,frequency:d.frequency});
-const dictToRow=d=>({id:d.id,section:d.section,role:d.role,title:d.title,est_min:+d.estMin||0,priority:d.priority||null,frequency:d.frequency||null});
-const taskFromRow=t=>({id:t.id,code:t.code,title:t.title,desc:t.description||'',section:t.section,role:t.role,assigneeId:t.assignee_id,supervisorId:t.supervisor_id,estMin:+t.est_min||0,actualMin:+t.actual_min||0,priority:t.priority,shift:t.shift,dueDate:t.due_date||'',frequency:t.frequency,status:t.status,createdAt:eMs(t.created_at),updatedAt:eMs(t.updated_at),timerStart:t.timer_start?+t.timer_start:null,attachments:t.attachments||[],comments:t.comments||[],cross:!!t.is_cross,assignedById:t.assigned_by_id,assignedByName:t.assigned_by_name,fromSection:t.from_section});
-const taskToRow=t=>({id:t.id,code:t.code||null,title:t.title,description:t.desc||null,section:t.section||null,role:t.role||null,assignee_id:t.assigneeId||null,supervisor_id:t.supervisorId||null,est_min:+t.estMin||0,actual_min:+t.actualMin||0,priority:t.priority||null,shift:t.shift||null,due_date:t.dueDate||null,frequency:t.frequency||null,status:t.status||'Not Started',created_at:eIso(t.createdAt),updated_at:eIso(t.updatedAt),timer_start:t.timerStart||null,attachments:t.attachments||[],comments:t.comments||[],is_cross:!!t.cross,assigned_by_id:t.assignedById||null,assigned_by_name:t.assignedByName||null,from_section:t.fromSection||null});
-const notifyFromRow=n=>({id:n.id,at:eMs(n.at),to:n.to_user,title:n.title,body:n.body,read:!!n.is_read});
-const notifyToRow=n=>({id:n.id,at:eIso(n.at),to_user:n.to||null,title:n.title||null,body:n.body||null,is_read:!!n.read});
-const ROW={users:[userFromRow,userToRow],roles:[roleFromRow,roleToRow],dict:[dictFromRow,dictToRow],tasks:[taskFromRow,taskToRow],notify:[notifyFromRow,notifyToRow]};
+function apiUrl(){ return API; }
 
 function save(){
   try{ localStorage.setItem(LS, JSON.stringify(DB)); }catch(e){}
-  if(!sb) return;
   if(isBlankDB()) return;
-  dbVersion++;
   setSyncStatus('saving');
   clearTimeout(saveTimer);
   saveTimer=setTimeout(syncSave, 250);
@@ -307,110 +281,28 @@ function isBlankDB(){
 function tombstone(id){ if(!id) return; if(!Array.isArray(DB.tomb)) DB.tomb=[];
   if(!DB.tomb.some(x=>x.id===id)) DB.tomb.push({id:id, at:Date.now()}); }
 function tombstoneAll(ids){ (ids||[]).forEach(tombstone); }
-/* ---- merge-safe save: never send a copy that could drop another device's data ---- */
-function mergeList(serverArr, localArr, preferLocal){
-  const map={};
-  (serverArr||[]).forEach(r=>{ if(r&&r.id!=null&&r.id!=='') map[r.id]=r; });
-  (localArr||[]).forEach(r=>{ if(!r||r.id==null||r.id==='') return; const cur=map[r.id];
-    if(!cur){ map[r.id]=r; return; } const cu=+cur.updatedAt||0, iu=+r.updatedAt||0;
-    if(iu>cu){ map[r.id]=r; }                 /* strictly newer edit wins */
-    else if(iu===cu && preferLocal!==false){ map[r.id]=r; } /* tie: local (save) or server (load) */
-  });
-  return Object.keys(map).map(k=>map[k]);
-}
-function tombIdSet(extra){
-  const ids=new Set();
-  (DB.tomb||[]).forEach(t=>{ if(t&&t.id) ids.add(String(t.id)); });
-  try{ if(DB.settings&&DB.settings.tomb){ JSON.parse(DB.settings.tomb).forEach(id=>ids.add(String(id))); } }catch(e){}
-  if(Array.isArray(extra)) extra.forEach(t=>{ if(t&&t.id) ids.add(String(t.id)); });
-  return ids;
-}
-/* Merge the server's current DB into the local one so a save is always a
-   superset of everything on the server (minus explicit deletions). This makes
-   it impossible for one device to erase tasks created on another. */
-function mergeRemote(server){
-  if(!server) return;
-  const tomb=new Set();
-  (DB.tomb||[]).forEach(t=>{ if(t&&t.id) tomb.add(String(t.id)); });
-  (server.tomb||[]).forEach(t=>{ if(t&&t.id) tomb.add(String(t.id)); });
-  try{ if(server.settings&&server.settings.tomb){ JSON.parse(server.settings.tomb).forEach(id=>tomb.add(String(id))); } }catch(e){}
-  const cols=['users','roles','dict','tasks','notify'];
-  const out={};
-  cols.forEach(n=>{ out[n]=mergeList(server[n], DB[n]).filter(r=>!tomb.has(String(r.id))); });
-  out.settings=Object.assign({}, server.settings||{}, DB.settings||{});
-  out.tomb=Array.from(tomb).map(id=>({id:id, at:0}));
-  out.settings.tomb=JSON.stringify(Array.from(tomb));
-  const seq={}, keys={};
-  Object.keys(server.seq||{}).forEach(k=>keys[k]=1);
-  Object.keys(DB.seq||{}).forEach(k=>keys[k]=1);
-  Object.keys(keys).forEach(k=>{ seq[k]=Math.max(+server.seq[k]||0, +DB.seq[k]||0); });
-  out.seq=seq;
-  DB=out;
-}
 function setSyncStatus(s){
   const el=document.getElementById('syncState'); if(!el) return;
   const t=new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
   el.textContent = s==='saving'?'Saving…':(s==='saved'?('Saved '+t):(s==='error'?'Not saved':''));
   el.style.color = s==='error'?'#C0392B':'var(--muted)';
 }
-function pushNow(){ syncSave(); }
-function sig(o){ return JSON.stringify(o); }
-function rebuildServer(){
-  ['users','roles','dict','tasks','notify'].forEach(k=>{ SERVER[k]={}; });
-  DB.users.forEach(x=>SERVER.users[x.id]=sig(userToRow(x)));
-  DB.roles.forEach(x=>SERVER.roles[x.id]=sig(roleToRow(x)));
-  DB.dict.forEach(x=>SERVER.dict[x.id]=sig(dictToRow(x)));
-  DB.tasks.forEach(x=>SERVER.tasks[x.id]=sig(taskToRow(x)));
-  DB.notify.forEach(x=>SERVER.notify[x.id]=sig(notifyToRow(x)));
-}
-/* ids carry a table prefix (u/r/d/t/n) — used to flush local deletions server-side. */
-const TBL_BY_PREFIX={u:'users',r:'roles',d:'dict',t:'tasks',n:'notify'};
-async function flushTombs(){
-  const tombs=(DB.tomb||[]).filter(t=>t&&t.id);
-  if(!tombs.length) return;
-  const byTbl={};
-  tombs.forEach(t=>{ const tb=TBL_BY_PREFIX[String(t.id)[0]]; if(tb){ (byTbl[tb]=byTbl[tb]||[]).push(String(t.id)); } });
-  const done=new Set();
-  for(const tb of Object.keys(byTbl)){
-    const ids=byTbl[tb];
-    const {error}=await sb.from(tb).delete().in('id',ids);
-    if(error) throw new Error(tb+' delete: '+error.message);
-    ids.forEach(id=>{ done.add(id); if(SERVER[tb]) delete SERVER[tb][id]; });
-  }
-  DB.tomb=(DB.tomb||[]).filter(t=>!(t&&done.has(String(t.id))));
-  try{ if(DB.settings&&DB.settings.tomb){ DB.settings.tomb=JSON.stringify(JSON.parse(DB.settings.tomb).filter(id=>!done.has(String(id)))); } }catch(e){}
-}
-/* Push only rows that changed since the last sync, and delete rows removed locally. */
+/* Save the whole DB to PostgreSQL (single shared blob). */
 async function syncSave(){
-  if(!sb || !loaded) return;
+  if(!loaded) return;
   if(isBlankDB()) return;
   if(saving){ savePending=true; return; }
   saving=true; setSyncStatus('saving');
   try{
-    await flushTombs();
-    await pushTable('users',  DB.users,  userToRow);
-    await pushTable('roles',  DB.roles,  roleToRow);
-    await pushTable('dict',   DB.dict,   dictToRow);
-    await pushTable('tasks',  DB.tasks,  taskToRow);
-    await pushTable('notify', DB.notify, notifyToRow, false);   /* append-only: never bulk-delete history */
-    let r=await sb.from('settings').upsert({key:'dailyMinutes',value:+DB.settings.dailyMinutes||480},{onConflict:'key'});
-    if(r.error) throw new Error('settings: '+r.error.message);
-    const seqRows=Object.keys(DB.seq||{}).map(k=>({key:k,value:+DB.seq[k]||0})).filter(x=>x.key);
-    if(seqRows.length){ r=await sb.from('seq').upsert(seqRows,{onConflict:'key'}); if(r.error) throw new Error('seq: '+r.error.message); }
-    lastServerVersion=dbVersion; API_OK=true; API_AT=Date.now(); API_ERR='';
+    const r=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'save',db:DB})});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const j=await r.json();
+    if(!j.ok) throw new Error(j.error||'save failed');
+    API_OK=true; API_AT=Date.now(); API_ERR='';
   }catch(e){ API_OK=false; API_ERR=String((e&&e.message)||e); }
   saving=false; setSyncStatus(API_OK?'saved':'error');
   if(savePending){ savePending=false; syncSave(); }
-}
-async function pushTable(tbl, arr, toRow, allowDelete){
-  allowDelete=allowDelete!==false;
-  const sv=SERVER[tbl]||(SERVER[tbl]={});
-  const ups=[], seen=new Set();
-  (arr||[]).forEach(item=>{ const row=toRow(item); const k=String(row.id); seen.add(k); if(sv[k]!==sig(row)) ups.push(row); });
-  const del=allowDelete?Object.keys(sv).filter(k=>!seen.has(k)):[];
-  if(ups.length){ const {error}=await sb.from(tbl).upsert(ups,{onConflict:'id'}); if(error) throw new Error(tbl+': '+error.message); }
-  if(del.length){ const {error}=await sb.from(tbl).delete().in('id',del); if(error) throw new Error(tbl+' delete: '+error.message); }
-  ups.forEach(r=>{ sv[String(r.id)]=sig(r); }); del.forEach(k=>{ delete sv[k]; });
 }
 /* Normalise incoming records to the types the app expects. */
 function normalizeDB(){
@@ -439,49 +331,20 @@ function applyTombs(){
   ids.forEach(id=>{ if(!(DB.tomb||[]).some(t=>t.id===id)) DB.tomb.push({id:id, at:0}); });
   DB.settings=DB.settings||{}; DB.settings.tomb=JSON.stringify(Array.from(ids));
 }
-/* PostgREST returns at most 1000 rows per request — page through to get all. */
-async function fetchAll(table, ord, apply){
-  const page=1000; let from=0, out=[];
-  for(;;){
-    let q=sb.from(table).select('*').order(ord||'id',{ascending:true}).range(from, from+page-1);
-    if(apply) q=apply(q);
-    const {data,error}=await q;
-    if(error) throw new Error(table+': '+error.message);
-    out=out.concat(data||[]);
-    if(!data || data.length<page) break;
-    from+=page;
-  }
-  return out;
-}
 async function apiLoad(){
-  if(!sb) return false;
   syncing=true;
   clearTimeout(saveTimer);
-  /* Push unsynced local edits before pulling the server copy. */
-  if(loaded && !isBlankDB() && dbVersion>lastServerVersion){ try{ await syncSave(); }catch(e){} }
   try{
-    const u =await fetchAll('users',   'id',  q=>q.eq('is_deleted',false));
-    const r =await fetchAll('roles',   'id');
-    const d =await fetchAll('dict',    'id');
-    const t =await fetchAll('tasks',   'id');
-    const n =await fetchAll('notify',  'id');
-    const st=await fetchAll('settings','key');
-    const sq=await fetchAll('seq',     'key');
-    const db=blankDB();
-    db.users=u.map(userFromRow);
-    db.roles=r.map(roleFromRow);
-    db.dict=d.map(dictFromRow);
-    db.tasks=t.map(taskFromRow);
-    db.notify=n.map(notifyFromRow);
-    db.settings={dailyMinutes:480}; st.forEach(s=>{ if(s.key==='dailyMinutes') db.settings.dailyMinutes=+s.value||480; });
-    db.seq=blankDB().seq; sq.forEach(s=>{ db.seq[s.key]=+s.value||0; });
-    /* Keep local tombstones so a reload can't resurrect just-deleted rows. */
-    db.tomb=(DB&&Array.isArray(DB.tomb))?DB.tomb.slice():[];
-    DB=db; normalizeDB();
-    rebuildServer();
+    const r=await fetch(API,{cache:'no-store'});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const j=await r.json();
+    if(!j.ok) throw new Error(j.error||'load failed');
+    DB=Object.assign(blankDB(), j.db||{});
+    if(!DB.seq) DB.seq=blankDB().seq;
+    if(!DB.settings) DB.settings={dailyMinutes:480};
+    normalizeDB();
     try{ localStorage.setItem(LS, JSON.stringify(DB)); }catch(e){}
-    lastFullLoad=Date.now(); lastServerVersion=dbVersion; loaded=true;
-    API_OK=true; API_AT=Date.now(); API_ERR='';
+    loaded=true; API_OK=true; API_AT=Date.now(); API_ERR='';
     syncing=false; restoreSession();
     if(savePending){ savePending=false; syncSave(); }
     return true;
@@ -494,37 +357,8 @@ function busyInput(){
   const ae=document.activeElement; const app=document.getElementById('app');
   return !!(ae && app && app.contains(ae) && /^(INPUT|SELECT|TEXTAREA)$/.test(ae.tagName));
 }
-function startRealtime(){
-  if(!sb || rtChannel) return;
-  try{
-    rtChannel=sb.channel('wt360')
-      .on('postgres_changes',{event:'*',schema:'public',table:'users'},  p=>applyRealtime('users',p))
-      .on('postgres_changes',{event:'*',schema:'public',table:'roles'},  p=>applyRealtime('roles',p))
-      .on('postgres_changes',{event:'*',schema:'public',table:'dict'},   p=>applyRealtime('dict',p))
-      .on('postgres_changes',{event:'*',schema:'public',table:'tasks'},  p=>applyRealtime('tasks',p))
-      .on('postgres_changes',{event:'*',schema:'public',table:'notify'}, p=>applyRealtime('notify',p))
-      .subscribe();
-  }catch(e){ API_ERR=String((e&&e.message)||e); }
-}
-function applyRealtime(tbl,p){
-  if(!DB || !DB[tbl]) return;
-  const evId=String((p.new&&p.new.id)||(p.old&&p.old.id)||'');
-  if(evId && (DB.tomb||[]).some(t=>t&&String(t.id)===evId)) return;   /* don't resurrect a local delete */
-  if(p.eventType==='DELETE'){
-    const id=p.old&&p.old.id;
-    if(id!=null){ DB[tbl]=DB[tbl].filter(x=>x.id!==id); if(SERVER[tbl]) delete SERVER[tbl][id]; }
-  } else if(p.new){
-    const row=ROW[tbl][0](p.new);
-    const i=DB[tbl].findIndex(x=>x.id===row.id);
-    if(i>=0) DB[tbl][i]=row; else DB[tbl].push(row);
-    SERVER[tbl][row.id]=sig(ROW[tbl][1](row));
-  }
-  if(tbl==='users' && current){ const c=DB.users.find(x=>x.id===current.id); if(c) current=c; else { current=null; setSession(null); } }
-  try{ localStorage.setItem(LS, JSON.stringify(DB)); }catch(e){}
-  if(!busyInput()) render();
-}
 async function smartSync(){
-  if(!sb || syncing) return false;
+  if(syncing) return false;
   if(busyInput()) return false;
   const ok=await apiLoad();
   if(ok) render();
@@ -2275,7 +2109,6 @@ updateNetGate();
 load();
 restoreSession();
 render();
-startRealtime();
 if(apiUrl()) apiLoad().then(ok=>{ if(ok) render(); });
 scheduleSyncLoop();
 </script>
