@@ -282,35 +282,88 @@ function isBlankDB(){
 function tombstone(id){ if(!id) return; if(!Array.isArray(DB.tomb)) DB.tomb=[];
   if(!DB.tomb.some(x=>x.id===id)) DB.tomb.push({id:id, at:Date.now()}); }
 function tombstoneAll(ids){ (ids||[]).forEach(tombstone); }
+/* Merge server + local by record id: the newer `updatedAt` wins, tombstones
+   filter deletions, and the union keeps everyone's records. */
+function mergeDB(server, local){
+  const tomb=new Set();
+  (server.tomb||[]).forEach(t=>{ if(t&&t.id) tomb.add(String(t.id)); });
+  (local.tomb||[]).forEach(t=>{ if(t&&t.id) tomb.add(String(t.id)); });
+  const cols=['users','roles','dict','tasks','notify'];
+  const out={};
+  cols.forEach(n=>{
+    const map={};
+    (server[n]||[]).forEach(r=>{ if(r&&r.id!=null&&r.id!=='') map[String(r.id)]=r; });
+    (local[n]||[]).forEach(r=>{
+      if(!r||r.id==null||r.id==='') return;
+      const k=String(r.id);
+      const cur=map[k];
+      if(!cur || (+r.updatedAt||0) >= (+cur.updatedAt||0)) map[k]=r;
+    });
+    out[n]=Object.keys(map).map(k=>map[k]).filter(r=>!tomb.has(String(r.id)));
+  });
+  out.settings=Object.assign({}, server.settings||{}, local.settings||{});
+  out.tomb=Array.from(tomb).map(id=>({id:id, at:0}));
+  const seq={}; const keys=new Set();
+  Object.keys(server.seq||{}).forEach(k=>keys.add(k));
+  Object.keys(local.seq||{}).forEach(k=>keys.add(k));
+  keys.forEach(k=>seq[k]=Math.max(+server.seq[k]||0, +local.seq[k]||0));
+  out.seq=seq;
+  return out;
+}
 function setSyncStatus(s){
   const el=document.getElementById('syncState'); if(!el) return;
   const t=new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
   el.textContent = s==='saving'?'Saving…':(s==='saved'?('Saved '+t):(s==='error'?'Not saved':''));
   el.style.color = s==='error'?'#C0392B':'var(--muted)';
 }
-/* Save the whole DB to PostgreSQL (single shared blob). */
+/* gzip a string to an ArrayBuffer (fall back to plain when unsupported). */
+async function gzip(str){
+  if(typeof CompressionStream==='function'){
+    try{
+      const cs=new CompressionStream('gzip');
+      const stream=new Blob([str]).stream().pipeThrough(cs);
+      return await new Response(stream).arrayBuffer();
+    }catch(e){}
+  }
+  return str;
+}
+/* Merge-and-save: pull the latest server state, merge our local edits into it
+   (newer `updatedAt` wins), then write back under an optimistic rev check so
+   concurrent saves from other devices can never be silently overwritten. */
 async function syncSave(){
   if(!loaded) return;
   if(isBlankDB()) return;
   if(saving){ savePending=true; return; }
   saving=true; setSyncStatus('saving');
   try{
-    const payload=JSON.stringify({action:'save',db:DB});
-    const headers={'Content-Type':'application/json'};
-    let body=payload;
-    if(typeof CompressionStream==='function'){
-      try{
-        const cs=new CompressionStream('gzip');
-        const stream=new Blob([payload]).stream().pipeThrough(cs);
-        body=await new Response(stream).arrayBuffer();
-        headers['Content-Encoding']='gzip';
-      }catch(e){}
+    let ok=false;
+    for(let attempt=0; attempt<6 && !ok; attempt++){
+      const r0=await fetch(API,{cache:'no-store'});
+      if(!r0.ok) throw new Error('HTTP '+r0.status);
+      const srv=await r0.json();
+      if(!srv.ok) throw new Error(srv.error||'load failed');
+      const baseRev=+srv.rev||0;
+      const merged=mergeDB(srv.db||{}, DB);
+      const payload=JSON.stringify({action:'save',db:merged,baseRev:baseRev});
+      const headers={'Content-Type':'application/json'};
+      const body=await gzip(payload);
+      if(body!==payload) headers['Content-Encoding']='gzip';
+      const r1=await fetch(API,{method:'POST',headers:headers,body:body});
+      if(!r1.ok) throw new Error('HTTP '+r1.status);
+      const j=await r1.json();
+      if(j.ok){
+        DB=merged;
+        try{ localStorage.setItem(LS, JSON.stringify(DB)); }catch(e){}
+        lastRev=+j.rev||lastRev;
+        API_OK=true; API_AT=Date.now(); API_ERR='';
+        ok=true;
+      } else if(j.error==='conflict'){
+        /* someone saved while we were merging — retry with the fresh state */
+      } else {
+        throw new Error(j.error||'save failed');
+      }
     }
-    const r=await fetch(API,{method:'POST',headers:headers,body:body});
-    if(!r.ok) throw new Error('HTTP '+r.status);
-    const j=await r.json();
-    if(!j.ok) throw new Error(j.error||'save failed');
-    API_OK=true; API_AT=Date.now(); API_ERR=''; lastRev=+j.rev||lastRev;
+    if(!ok){ throw new Error('save conflict after retries'); }
   }catch(e){ API_OK=false; API_ERR=String((e&&e.message)||e); }
   saving=false; setSyncStatus(API_OK?'saved':'error');
   if(savePending){ savePending=false; syncSave(); }
@@ -350,7 +403,7 @@ async function apiLoad(){
     if(!r.ok) throw new Error('HTTP '+r.status);
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||'load failed');
-    DB=Object.assign(blankDB(), j.db||{});
+    DB=mergeDB(j.db||{}, DB);
     if(!DB.seq) DB.seq=blankDB().seq;
     if(!DB.settings) DB.settings={dailyMinutes:480};
     normalizeDB();

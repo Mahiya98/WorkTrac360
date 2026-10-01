@@ -44,7 +44,7 @@ async function load() {
   }
 }
 
-async function save(db) {
+async function save(db, baseRev) {
   const client = new Client(dbConfig());
   await client.connect();
   try {
@@ -54,12 +54,16 @@ async function save(db) {
              rev = COALESCE(rev, 0) + 1,
              ts = $2,
              updated_at = now()
-       WHERE id = 1
+       WHERE id = 1 AND COALESCE(rev, 0) = $3
        RETURNING db, rev, ts, updated_at;`,
-      [JSON.stringify(db), Date.now()]
+      [JSON.stringify(db), Date.now(), +baseRev || 0]
     );
     if (r.rows.length === 0) {
-      return { ok: false, error: 'wt360_state row (id=1) not found' };
+      const chk = await client.query('SELECT rev FROM wt360_state WHERE id = 1;');
+      if (chk.rows.length === 0) {
+        return { ok: false, error: 'wt360_state row (id=1) not found' };
+      }
+      return { ok: false, error: 'conflict', rev: chk.rows[0].rev };
     }
     const row = r.rows[0];
     return { ok: true, db: row.db, rev: row.rev, ts: row.ts, updatedAt: row.updated_at };
@@ -205,7 +209,7 @@ const server = http.createServer(async (req, res) => {
             send(res, 400, { ok: false, error: 'missing db object' });
             return;
           }
-          send(res, 200, await save(parsed.db));
+            send(res, 200, await save(parsed.db, parsed.baseRev));
         } else {
           send(res, 400, { ok: false, error: 'unknown action: ' + action });
         }
