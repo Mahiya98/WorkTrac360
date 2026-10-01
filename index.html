@@ -258,58 +258,57 @@ function blankDB(){
 let DB;
 function load(){ try{ const raw=localStorage.getItem(LS); DB=raw?JSON.parse(raw):blankDB(); }catch(e){ DB=blankDB(); } if(!DB.seq) DB.seq=blankDB().seq; if(!DB.settings) DB.settings={dailyMinutes:480}; }
 
-/* ---- Backend: Azure PostgreSQL (single shared DB via /api/wt360) ---- */
+/* ---- Backend: Azure PostgreSQL (per-table sync) ---- */
 const API='/api/wt360';
 let API_OK=false, API_AT=0, API_ERR='';
 let syncing=false;
 let saveTimer=null, saving=false, savePending=false, loaded=false;
+let dbVersion=0, lastServerVersion=0;
 let lastRev=0;
 function apiUrl(){ return API; }
+
+/* ---- row <-> app-shape converters ---- */
+const eMs=v=>v?new Date(v).getTime():0;
+const eIso=n=>n?new Date(+n).toISOString():null;
+const userFromRow=r=>({id:r.id,enroll:r.enroll==null?'':String(r.enroll),name:r.name||'',section:r.section||'',role:r.role||'',type:r.type||'member',status:r.status||'pending',updatedAt:eMs(r.updated_at)});
+const userToRow=u=>({id:u.id,enroll:u.enroll==null?null:String(u.enroll),name:u.name||'',section:u.section||null,role:u.role||null,type:u.type||'member',status:u.status||'pending',updated_at:eIso(u.updatedAt),is_deleted:false});
+const roleFromRow=r=>({id:r.id,section:r.section,name:r.name});
+const roleToRow=r=>({id:r.id,section:r.section,name:r.name});
+const dictFromRow=d=>({id:d.id,section:d.section,role:d.role,title:d.title,estMin:+d.est_min||0,priority:d.priority,frequency:d.frequency});
+const dictToRow=d=>({id:d.id,section:d.section,role:d.role,title:d.title,est_min:+d.estMin||0,priority:d.priority||null,frequency:d.frequency||null});
+const taskFromRow=t=>({id:t.id,code:t.code,title:t.title,desc:t.description||'',section:t.section,role:t.role,assigneeId:t.assignee_id,supervisorId:t.supervisor_id,estMin:+t.est_min||0,actualMin:+t.actual_min||0,priority:t.priority,shift:t.shift,dueDate:t.due_date||'',frequency:t.frequency,status:t.status,createdAt:eMs(t.created_at),updatedAt:eMs(t.updated_at),timerStart:t.timer_start?+t.timer_start:null,attachments:t.attachments||[],comments:t.comments||[],cross:!!t.is_cross,assignedById:t.assigned_by_id,assignedByName:t.assigned_by_name,fromSection:t.from_section});
+const taskToRow=t=>({id:t.id,code:t.code||null,title:t.title,description:t.desc||null,section:t.section||null,role:t.role||null,assignee_id:t.assigneeId||null,supervisor_id:t.supervisorId||null,est_min:+t.estMin||0,actual_min:+t.actualMin||0,priority:t.priority||null,shift:t.shift||null,due_date:t.dueDate||null,frequency:t.frequency||null,status:t.status||'Not Started',created_at:eIso(t.createdAt),updated_at:eIso(t.updatedAt),timer_start:t.timerStart||null,attachments:t.attachments||[],comments:t.comments||[],is_cross:!!t.cross,assigned_by_id:t.assignedById||null,assigned_by_name:t.assignedByName||null,from_section:t.fromSection||null});
+const notifyFromRow=n=>({id:n.id,at:eMs(n.at),to:n.to_user,title:n.title,body:n.body,read:!!n.is_read});
+const notifyToRow=n=>({id:n.id,at:eIso(n.at),to_user:n.to||null,title:n.title||null,body:n.body||null,is_read:!!n.read});
+const ROW={users:[userFromRow,userToRow],roles:[roleFromRow,roleToRow],dict:[dictFromRow,dictToRow],tasks:[taskFromRow,taskToRow],notify:[notifyFromRow,notifyToRow]};
+
+/* Snapshot of the last-known server state, used to diff local changes. */
+const SERVER={users:{},roles:{},dict:{},tasks:{},notify:{}};
+function sig(o){ return JSON.stringify(o); }
+function rebuildServer(){
+  ['users','roles','dict','tasks','notify'].forEach(k=>{ SERVER[k]={}; });
+  DB.users.forEach(x=>SERVER.users[x.id]=sig(userToRow(x)));
+  DB.roles.forEach(x=>SERVER.roles[x.id]=sig(roleToRow(x)));
+  DB.dict.forEach(x=>SERVER.dict[x.id]=sig(dictToRow(x)));
+  DB.tasks.forEach(x=>SERVER.tasks[x.id]=sig(taskToRow(x)));
+  DB.notify.forEach(x=>SERVER.notify[x.id]=sig(notifyToRow(x)));
+}
 
 function save(){
   try{ localStorage.setItem(LS, JSON.stringify(DB)); }catch(e){}
   if(isBlankDB()) return;
+  dbVersion++;
   setSyncStatus('saving');
   clearTimeout(saveTimer);
   saveTimer=setTimeout(syncSave, 250);
 }
-/* A blank/empty DB must never reach the server — it would wipe everything.
-   Legitimate state always has at least one user (the superadmin). */
+/* A blank/empty DB must never reach the server — it would wipe everything. */
 function isBlankDB(){
   return (DB.users||[]).length===0 && (DB.tasks||[]).length===0;
 }
-/* Record a deletion so the server removes the record for everyone (merge-safe). */
 function tombstone(id){ if(!id) return; if(!Array.isArray(DB.tomb)) DB.tomb=[];
   if(!DB.tomb.some(x=>x.id===id)) DB.tomb.push({id:id, at:Date.now()}); }
 function tombstoneAll(ids){ (ids||[]).forEach(tombstone); }
-/* Merge server + local by record id: the newer `updatedAt` wins, tombstones
-   filter deletions, and the union keeps everyone's records. */
-function mergeDB(server, local){
-  const tomb=new Set();
-  (server.tomb||[]).forEach(t=>{ if(t&&t.id) tomb.add(String(t.id)); });
-  (local.tomb||[]).forEach(t=>{ if(t&&t.id) tomb.add(String(t.id)); });
-  const cols=['users','roles','dict','tasks','notify'];
-  const out={};
-  cols.forEach(n=>{
-    const map={};
-    (server[n]||[]).forEach(r=>{ if(r&&r.id!=null&&r.id!=='') map[String(r.id)]=r; });
-    (local[n]||[]).forEach(r=>{
-      if(!r||r.id==null||r.id==='') return;
-      const k=String(r.id);
-      const cur=map[k];
-      if(!cur || (+r.updatedAt||0) >= (+cur.updatedAt||0)) map[k]=r;
-    });
-    out[n]=Object.keys(map).map(k=>map[k]).filter(r=>!tomb.has(String(r.id)));
-  });
-  out.settings=Object.assign({}, server.settings||{}, local.settings||{});
-  out.tomb=Array.from(tomb).map(id=>({id:id, at:0}));
-  const seq={}; const keys=new Set();
-  Object.keys(server.seq||{}).forEach(k=>keys.add(k));
-  Object.keys(local.seq||{}).forEach(k=>keys.add(k));
-  keys.forEach(k=>seq[k]=Math.max(+server.seq[k]||0, +local.seq[k]||0));
-  out.seq=seq;
-  return out;
-}
 function setSyncStatus(s){
   const el=document.getElementById('syncState'); if(!el) return;
   const t=new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
@@ -327,43 +326,46 @@ async function gzip(str){
   }
   return str;
 }
-/* Merge-and-save: pull the latest server state, merge our local edits into it
-   (newer `updatedAt` wins), then write back under an optimistic rev check so
-   concurrent saves from other devices can never be silently overwritten. */
+/* Diff one table against the last-known server state; collect upserts + deletes. */
+function diffTable(t, upserts, deletes, allowDelete){
+  const toRow=ROW[t][1];
+  const sv=SERVER[t]||(SERVER[t]={});
+  const ups=[], seen=new Set();
+  (DB[t]||[]).forEach(item=>{
+    if(!item || item.id==null || item.id==='') return;
+    const row=toRow(item); const k=String(row.id); seen.add(k);
+    if(sv[k]!==sig(row)) ups.push(row);
+  });
+  const del=allowDelete!==false ? Object.keys(sv).filter(k=>!seen.has(k)) : [];
+  if(ups.length) upserts[t]=ups;
+  if(del.length) deletes[t]=del;
+  ups.forEach(r=>{ sv[String(r.id)]=sig(r); });
+  del.forEach(k=>{ delete sv[k]; });
+}
+/* Push only the rows that changed since the last sync (and delete removed rows). */
 async function syncSave(){
   if(!loaded) return;
   if(isBlankDB()) return;
   if(saving){ savePending=true; return; }
   saving=true; setSyncStatus('saving');
   try{
-    let ok=false;
-    for(let attempt=0; attempt<6 && !ok; attempt++){
-      const r0=await fetch(API,{cache:'no-store'});
-      if(!r0.ok) throw new Error('HTTP '+r0.status);
-      const srv=await r0.json();
-      if(!srv.ok) throw new Error(srv.error||'load failed');
-      const baseRev=+srv.rev||0;
-      const merged=mergeDB(srv.db||{}, DB);
-      const payload=JSON.stringify({action:'save',db:merged,baseRev:baseRev});
-      const headers={'Content-Type':'application/json'};
-      const body=await gzip(payload);
-      if(body!==payload) headers['Content-Encoding']='gzip';
-      const r1=await fetch(API,{method:'POST',headers:headers,body:body});
-      if(!r1.ok) throw new Error('HTTP '+r1.status);
-      const j=await r1.json();
-      if(j.ok){
-        DB=merged;
-        try{ localStorage.setItem(LS, JSON.stringify(DB)); }catch(e){}
-        lastRev=+j.rev||lastRev;
-        API_OK=true; API_AT=Date.now(); API_ERR='';
-        ok=true;
-      } else if(j.error==='conflict'){
-        /* someone saved while we were merging — retry with the fresh state */
-      } else {
-        throw new Error(j.error||'save failed');
-      }
-    }
-    if(!ok){ throw new Error('save conflict after retries'); }
+    const upserts={}, deletes={};
+    diffTable('users', upserts, deletes, true);
+    diffTable('roles', upserts, deletes, true);
+    diffTable('dict', upserts, deletes, true);
+    diffTable('tasks', upserts, deletes, true);
+    diffTable('notify', upserts, deletes, false);
+    const settings=[{key:'dailyMinutes', value:+DB.settings.dailyMinutes||480}];
+    const seq=Object.keys(DB.seq||{}).map(k=>({key:k, value:+DB.seq[k]||0})).filter(x=>x.key);
+    const payload=JSON.stringify({action:'save', upserts, deletes, settings, seq});
+    const headers={'Content-Type':'application/json'};
+    const body=await gzip(payload);
+    if(body!==payload) headers['Content-Encoding']='gzip';
+    const r=await fetch(API,{method:'POST',headers:headers,body:body});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const j=await r.json();
+    if(!j.ok) throw new Error(j.error||'save failed');
+    lastServerVersion=dbVersion; API_OK=true; API_AT=Date.now(); API_ERR=''; lastRev=+j.rev||lastRev;
   }catch(e){ API_OK=false; API_ERR=String((e&&e.message)||e); }
   saving=false; setSyncStatus(API_OK?'saved':'error');
   if(savePending){ savePending=false; syncSave(); }
@@ -382,33 +384,32 @@ function normalizeDB(){
     if(t.timerStart===undefined) t.timerStart=null;
   });
   DB.notify.forEach(n=>{ n.read=!!n.read; });
-  applyTombs();
 }
-/* Tombstones live in DB.tomb and in settings.tomb (so they survive on the
-   old overwrite backend too). Drop any record whose id is tombstoned. */
-function applyTombs(){
-  const ids=new Set();
-  (DB.tomb||[]).forEach(t=>{ if(t&&t.id) ids.add(String(t.id)); });
-  try{ if(DB.settings&&DB.settings.tomb){ JSON.parse(DB.settings.tomb).forEach(id=>ids.add(String(id))); } }catch(e){}
-  if(!ids.size) return;
-  ['users','roles','dict','tasks','notify'].forEach(k=>{ DB[k]=(DB[k]||[]).filter(r=>!ids.has(String(r.id))); });
-  ids.forEach(id=>{ if(!(DB.tomb||[]).some(t=>t.id===id)) DB.tomb.push({id:id, at:0}); });
-  DB.settings=DB.settings||{}; DB.settings.tomb=JSON.stringify(Array.from(ids));
-}
+/* Pull all tables from the server and rebuild the local DB from them. */
 async function apiLoad(){
   syncing=true;
   clearTimeout(saveTimer);
+  if(loaded && !isBlankDB() && dbVersion>lastServerVersion){ try{ await syncSave(); }catch(e){} }
   try{
     const r=await fetch(API,{cache:'no-store'});
     if(!r.ok) throw new Error('HTTP '+r.status);
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||'load failed');
-    DB=mergeDB(j.db||{}, DB);
-    if(!DB.seq) DB.seq=blankDB().seq;
-    if(!DB.settings) DB.settings={dailyMinutes:480};
-    normalizeDB();
+    const s=j.db||{};
+    const db=blankDB();
+    db.users=(s.users||[]).map(userFromRow);
+    db.roles=(s.roles||[]).map(roleFromRow);
+    db.dict=(s.dict||[]).map(dictFromRow);
+    db.tasks=(s.tasks||[]).map(taskFromRow);
+    db.notify=(s.notify||[]).map(notifyFromRow);
+    db.settings={dailyMinutes:480};
+    (s.settings||[]).forEach(x=>{ if(x.key==='dailyMinutes') db.settings.dailyMinutes=+x.value||480; });
+    db.seq=blankDB().seq;
+    (s.seq||[]).forEach(x=>{ if(x.key!=='mod') db.seq[x.key]=+x.value||0; });
+    db.tomb=[];
+    DB=db; normalizeDB(); rebuildServer();
     try{ localStorage.setItem(LS, JSON.stringify(DB)); }catch(e){}
-    loaded=true; API_OK=true; API_AT=Date.now(); API_ERR=''; lastRev=+j.rev||0;
+    lastServerVersion=dbVersion; loaded=true; API_OK=true; API_AT=Date.now(); API_ERR=''; lastRev=+j.rev||0;
     syncing=false; restoreSession();
     if(savePending){ savePending=false; syncSave(); }
     return true;
@@ -449,12 +450,12 @@ function scheduleSyncLoop(){
   if(pollTimer) clearInterval(pollTimer);
   /* Poll the server revision every 3s; pull the full DB only when it changed. */
   pollTimer=setInterval(async ()=>{
-    if(document.hidden || !apiUrl() || syncing) return;
+    if(document.hidden || !apiUrl() || syncing || busyInput()) return;
     try{
       const rev=await apiRev();
       if(rev>=0 && rev!==lastRev){
         const ok=await apiLoad();
-        if(ok && !busyInput()) render();
+        if(ok) render();
       }
     }catch(e){}
   }, 3000);

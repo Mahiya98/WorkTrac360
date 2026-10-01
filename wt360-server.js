@@ -21,52 +21,114 @@ function dbConfig() {
   };
 }
 
-async function load() {
+const TABLES = {
+  users: {
+    pk: 'id',
+    cols: ['id','enroll','name','section','role','type','status','created_at','updated_at','is_deleted'],
+    types: 'id text, enroll text, name text, section text, role text, type text, status text, created_at timestamptz, updated_at timestamptz, is_deleted boolean',
+  },
+  roles: {
+    pk: 'id',
+    cols: ['id','section','name'],
+    types: 'id text, section text, name text',
+  },
+  dict: {
+    pk: 'id',
+    cols: ['id','section','role','title','est_min','priority','frequency'],
+    types: 'id text, section text, role text, title text, est_min integer, priority text, frequency text',
+  },
+  tasks: {
+    pk: 'id',
+    cols: ['id','code','title','description','section','role','assignee_id','supervisor_id','est_min','actual_min','priority','shift','due_date','frequency','status','created_at','updated_at','timer_start','attachments','comments','is_cross','assigned_by_id','assigned_by_name','from_section'],
+    types: 'id text, code text, title text, description text, section text, role text, assignee_id text, supervisor_id text, est_min integer, actual_min integer, priority text, shift text, due_date text, frequency text, status text, created_at timestamptz, updated_at timestamptz, timer_start bigint, attachments jsonb, comments jsonb, is_cross boolean, assigned_by_id text, assigned_by_name text, from_section text',
+  },
+  notify: {
+    pk: 'id',
+    cols: ['id','at','to_user','title','body','is_read'],
+    types: 'id text, at timestamptz, to_user text, title text, body text, is_read boolean',
+  },
+};
+const DATA_TABLES = ['users','roles','dict','tasks','notify'];
+
+async function loadDB() {
   const client = new Client(dbConfig());
   await client.connect();
   try {
-    const r = await client.query(
-      'SELECT db, rev, ts, updated_at FROM wt360_state WHERE id = 1;'
-    );
-    if (r.rows.length === 0) {
-      return { ok: false, error: 'wt360_state row (id=1) not found' };
+    const db = {};
+    for (const t of DATA_TABLES) {
+      db[t] = (await client.query(`SELECT * FROM ${t} ORDER BY id`)).rows;
     }
-    const row = r.rows[0];
-    return {
-      ok: true,
-      db: row.db,
-      rev: row.rev,
-      ts: row.ts,
-      updatedAt: row.updated_at,
-    };
+    db.settings = (await client.query('SELECT key, value FROM settings ORDER BY key')).rows;
+    db.seq = (await client.query('SELECT key, value FROM seq ORDER BY key')).rows;
+    const modRows = (await client.query(`SELECT value FROM seq WHERE key = 'mod'`)).rows;
+    return { ok: true, db, rev: modRows.length ? Number(modRows[0].value) : 0 };
   } finally {
     await client.end();
   }
 }
 
-async function save(db, baseRev) {
+async function getRev() {
   const client = new Client(dbConfig());
   await client.connect();
   try {
-    const r = await client.query(
-      `UPDATE wt360_state
-         SET db = $1::jsonb,
-             rev = COALESCE(rev, 0) + 1,
-             ts = $2,
-             updated_at = now()
-       WHERE id = 1 AND COALESCE(rev, 0) = $3
-       RETURNING db, rev, ts, updated_at;`,
-      [JSON.stringify(db), Date.now(), +baseRev || 0]
-    );
-    if (r.rows.length === 0) {
-      const chk = await client.query('SELECT rev FROM wt360_state WHERE id = 1;');
-      if (chk.rows.length === 0) {
-        return { ok: false, error: 'wt360_state row (id=1) not found' };
+    const r = await client.query(`SELECT value FROM seq WHERE key = 'mod'`);
+    return { ok: true, rev: r.rows.length ? Number(r.rows[0].value) : 0 };
+  } finally {
+    await client.end();
+  }
+}
+
+async function saveChanges(upserts, deletes, settings, seq) {
+  const client = new Client(dbConfig());
+  await client.connect();
+  try {
+    await client.query('BEGIN');
+    for (const t of DATA_TABLES) {
+      const def = TABLES[t];
+      const rows = (upserts && upserts[t]) || [];
+      if (rows.length) {
+        const j = JSON.stringify(rows);
+        const colList = def.cols.join(', ');
+        const setClause = def.cols
+          .filter((col) => col !== def.pk && col !== 'created_at')
+          .map((col) => `${col}=EXCLUDED.${col}`)
+          .join(', ');
+        await client.query(
+          `INSERT INTO ${t} (${colList})
+           SELECT ${colList} FROM jsonb_to_recordset($1::jsonb) AS x(${def.types})
+           ON CONFLICT (${def.pk}) DO UPDATE SET ${setClause}`,
+          [j]
+        );
       }
-      return { ok: false, error: 'conflict', rev: chk.rows[0].rev };
+      const ids = (deletes && deletes[t]) || [];
+      if (ids.length) {
+        await client.query(`DELETE FROM ${t} WHERE id = ANY($1::text[])`, [ids.map(String)]);
+      }
     }
-    const row = r.rows[0];
-    return { ok: true, db: row.db, rev: row.rev, ts: row.ts, updatedAt: row.updated_at };
+    for (const s of (settings || [])) {
+      if (!s || s.key == null) continue;
+      await client.query(
+        `INSERT INTO settings(key, value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value`,
+        [String(s.key), s.value == null ? null : Number(s.value)]
+      );
+    }
+    for (const s of (seq || [])) {
+      if (!s || s.key == null) continue;
+      await client.query(
+        `INSERT INTO seq(key, value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value`,
+        [String(s.key), s.value == null ? null : Number(s.value)]
+      );
+    }
+    const mod = Date.now();
+    await client.query(
+      `INSERT INTO seq(key, value) VALUES('mod', $1) ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value`,
+      [mod]
+    );
+    await client.query('COMMIT');
+    return { ok: true, rev: mod };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
   } finally {
     await client.end();
   }
@@ -78,7 +140,7 @@ function send(res, status, obj) {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type,Content-Encoding',
     'Cache-Control': 'no-store',
   });
   res.end(body);
@@ -152,7 +214,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers': 'Content-Type,Content-Encoding',
     });
     res.end();
     return;
@@ -161,7 +223,7 @@ const server = http.createServer(async (req, res) => {
   if (pathname === '/api/wt360' || pathname === '/api/wt360/') {
     if (req.method === 'GET') {
       try {
-        send(res, 200, await load());
+        send(res, 200, await loadDB());
       } catch (e) {
         send(res, 500, { ok: false, error: e.message });
       }
@@ -176,7 +238,6 @@ const server = http.createServer(async (req, res) => {
         send(res, 413, { ok: false, error: e.message });
         return;
       }
-
       let parsed;
       try {
         parsed = JSON.parse(body || '{}');
@@ -184,32 +245,16 @@ const server = http.createServer(async (req, res) => {
         send(res, 400, { ok: false, error: 'invalid JSON body' });
         return;
       }
-
-      const action = parsed.action || (parsed.db ? 'save' : 'load');
-
+      const action = parsed.action;
       try {
         if (action === 'ping') {
           send(res, 200, { ok: true, pong: true, time: Date.now() });
         } else if (action === 'rev') {
-          const client = new Client(dbConfig());
-          await client.connect();
-          try {
-            const r = await client.query('SELECT rev, ts FROM wt360_state WHERE id = 1;');
-            const row = r.rows[0];
-            send(res, 200, { ok: true, rev: row ? row.rev : 0, ts: row ? row.ts : 0 });
-          } catch (e) {
-            send(res, 500, { ok: false, error: e.message });
-          } finally {
-            await client.end();
-          }
+          send(res, 200, await getRev());
         } else if (action === 'load') {
-          send(res, 200, await load());
+          send(res, 200, await loadDB());
         } else if (action === 'save') {
-          if (!parsed.db || typeof parsed.db !== 'object') {
-            send(res, 400, { ok: false, error: 'missing db object' });
-            return;
-          }
-            send(res, 200, await save(parsed.db, parsed.baseRev));
+          send(res, 200, await saveChanges(parsed.upserts, parsed.deletes, parsed.settings, parsed.seq));
         } else {
           send(res, 400, { ok: false, error: 'unknown action: ' + action });
         }
