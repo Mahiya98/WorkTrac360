@@ -109,7 +109,7 @@ const MIME = {
 };
 
 function serveStatic(res, pathname) {
-  let rel = pathname === '/' || pathname === '/wt360' ? '/wt360.html' : pathname;
+  let rel = pathname === '/' || pathname === '/wt360' ? '/index.html' : pathname;
   rel = rel.split('?')[0];
   const file = path.join(__dirname, rel);
   if (!file.startsWith(__dirname)) {
