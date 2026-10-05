@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>ACCL · WorkTrac360</title>
+<title>AEFML · WorkTrac360</title>
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#1F4E78">
 <meta name="mobile-web-app-capable" content="yes">
@@ -13,7 +13,7 @@
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="apple-touch-icon" sizes="512x512" href="icon-512.png">
 <link rel="icon" type="image/png" href="icon-192.png">
-<meta name="description" content="WorkTrac360 — Task assignment, tracking and reporting for Akij Cement Company Ltd.">
+<meta name="description" content="WorkTrac360 — Task assignment, tracking and reporting for Akij Essential Flour Mills Ltd.">
 <meta name="application-name" content="WorkTrac360">
 <meta name="robots" content="noindex, nofollow">
 <style>
@@ -199,7 +199,7 @@
 
 <script>
 /* =========================================================================
-   ACCL — WORKTRAC360
+   AEFML — WORKTRAC360
    Account types: Supervisor | Team Member.  Identity = Enroll ID only.
    Data stored in this browser (localStorage). Notifications are in-app.
    ========================================================================= */
@@ -224,7 +224,7 @@ const BUILD = '4.12';
 
 /* Super Admin self-registration is protected by this setup code.
    CHANGE IT to your own value (share only with OPEX leads). */
-const SUPER_SETUP_CODE = 'ACCL-OPEX-2026';
+const SUPER_SETUP_CODE = 'AEFML-OPEX-2026';
 
 /* suggested designations (typing is free — these are only hints) */
 const ROLE_HINTS = {
@@ -618,8 +618,8 @@ function wrapTables(root){
 function loginView(){
   const none = DB.users.length===0;
   return `<div class="auth-wrap"><div class="auth-card">
-    <div class="auth-brand"><div class="auth-logo">ACCL</div>
-      <div><h1>WorkTrac360</h1><span>Akij Cement Company Ltd.</span></div></div>
+    <div class="auth-brand"><div class="auth-logo">AEFML</div>
+      <div><h1>WorkTrac360</h1><span>Akij Essential Flour Mills Ltd.</span></div></div>
     <p class="lead">Sign in with your Enroll ID.</p>
     ${authMsg?`<div class="ok">${esc(authMsg)}</div>`:''}
     ${none?`<div class="note"><b>Getting started:</b> no accounts yet. Register the first <b>Supervisor</b> for a department — they can then add their team.</div>`:''}
@@ -632,8 +632,8 @@ function loginView(){
 function registerView(){
   const secOpts=SECTIONS.map(s=>`<option>${esc(s)}</option>`).join('');
   return `<div class="auth-wrap"><div class="auth-card">
-    <div class="auth-brand"><div class="auth-logo">ACCL</div>
-      <div><h1>Register</h1><span>Akij Cement Company Ltd.</span></div></div>
+    <div class="auth-brand"><div class="auth-logo">AEFML</div>
+      <div><h1>Register</h1><span>Akij Essential Flour Mills Ltd.</span></div></div>
     <p class="lead">Team members need approval from their department supervisor. Supervisors can sign in immediately.</p>
     ${authMsg?`<div class="ok">${esc(authMsg)}</div>`:''}
     <div class="field"><label>Registering as</label>
@@ -657,8 +657,8 @@ function registerView(){
 }
 function superAdminView(){
   return `<div class="auth-wrap"><div class="auth-card">
-    <div class="auth-brand"><div class="auth-logo">ACCL</div>
-      <div><h1>Super Admin access</h1><span>Akij Cement Company Ltd.</span></div></div>
+    <div class="auth-brand"><div class="auth-logo">AEFML</div>
+      <div><h1>Super Admin access</h1><span>Akij Essential Flour Mills Ltd.</span></div></div>
     <p class="lead">Restricted area. Enter the setup code to register a Super Admin account.</p>
     ${authMsg?`<div class="ok">${esc(authMsg)}</div>`:''}
     <div class="field"><label>Setup code</label><input id="saCode" type="password" placeholder="Enter setup code"></div>
@@ -793,7 +793,7 @@ function shell(){
   }
   return `
   <div class="topbar">
-    <div class="brand"><div class="mk">ACCL</div><div>WorkTrac360<small>Akij Cement Company Ltd.</small></div></div>
+    <div class="brand"><div class="mk">AEFML</div><div>WorkTrac360<small>Akij Essential Flour Mills Ltd.</small></div></div>
     <div class="spacer"></div>
     <div class="who"><div class="avatar">${esc(initials(current.name))}</div>
       <div class="nm">${esc(current.name)}<small>${typeBadge(current.type)} ${esc(current.section)} · ${esc(current.role)}</small></div></div>
@@ -1680,7 +1680,7 @@ function parseCSV(text){
 }
 function downloadTemplate(){
   const csv='name,enroll,role,type\nAbdul Karim,560901,Line Operator,member\nMd. Rashed,560902,Shift Incharge,supervisor\n';
-  download('ACCL_team_template.csv', csv);
+  download('AEFML_team_template.csv', csv);
 }
 function importCSV(input){
   const f=input.files && input.files[0]; if(!f) return;
@@ -1873,19 +1873,19 @@ function exportDateWise(){
   const ts=dateWiseTasks().slice().sort((a,b)=>taskDateKey(b).localeCompare(taskDateKey(a)));
   const head=['Date','Code','Title','Department','Role','Assignee','Enroll','Status','Priority','Shift','Frequency','EstMin','ActualMin'];
   const rows=ts.map(t=>[taskDateKey(t),t.code,t.title,t.section,t.role,user(t.assigneeId).name,user(t.assigneeId).enroll,t.status,t.priority,t.shift,t.frequency,t.estMin,t.actualMin]);
-  download('ACCL_datewise_tasks.csv',[head,...rows].map(r=>r.map(c=>`"${String(c==null?'':c).replace(/"/g,'""')}"`).join(',')).join('\n'));
+  download('AEFML_datewise_tasks.csv',[head,...rows].map(r=>r.map(c=>`"${String(c==null?'':c).replace(/"/g,'""')}"`).join(',')).join('\n'));
 }
 function download(name,text){ const b=new Blob([text],{type:'text/csv;charset=utf-8;'}); const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download=name; a.click(); URL.revokeObjectURL(a.href); }
 function exportCSV(){
   const ts=dateWiseTasks();
   const head=['Code','Title','Department','Role','Assignee','Enroll','Status','Priority','Shift','Frequency','EstMin','ActualMin','DueDate','Overdue','Created','Updated'];
   const rows=ts.map(t=>[t.code,t.title,t.section,t.role,user(t.assigneeId).name,user(t.assigneeId).enroll,t.status,t.priority,t.shift,t.frequency,t.estMin,t.actualMin,t.dueDate,isOverdue(t)?'Yes':'No',fmt(t.createdAt),fmt(t.updatedAt)]);
-  download('ACCL_tasks.csv',[head,...rows].map(r=>r.map(c=>`"${String(c==null?'':c).replace(/"/g,'""')}"`).join(',')).join('\n'));
+  download('AEFML_tasks.csv',[head,...rows].map(r=>r.map(c=>`"${String(c==null?'':c).replace(/"/g,'""')}"`).join(',')).join('\n'));
 }
 function exportDict(){
   const head=['Department','Role','Task','EstMin','Priority','Frequency'];
   const rows=DB.dict.map(d=>[d.section,d.role,d.title,d.estMin,d.priority,d.frequency]);
-  download('ACCL_dictionary.csv',[head,...rows].map(r=>r.map(c=>`"${c}"`).join(',')).join('\n'));
+  download('AEFML_dictionary.csv',[head,...rows].map(r=>r.map(c=>`"${c}"`).join(',')).join('\n'));
 }
 
 /* ------------------------------ departments ----------------------------- */
