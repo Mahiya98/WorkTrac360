@@ -42,6 +42,7 @@ const TABLES = {
   },
 };
 const DATA_TABLES = ['users','roles','dict','tasks','notify'];
+const SQL = { users:'aefml_users', roles:'aefml_roles', dict:'aefml_dict', tasks:'aefml_tasks', notify:'aefml_notify', settings:'aefml_settings', seq:'aefml_seq' };
 
 function client() {
   return new Client(dbConfig());
@@ -53,11 +54,11 @@ async function loadDB() {
   try {
     const db = {};
     for (const t of DATA_TABLES) {
-      db[t] = (await c.query(`SELECT * FROM ${t} ORDER BY id`)).rows;
+      db[t] = (await c.query(`SELECT * FROM ${SQL[t]} ORDER BY id`)).rows;
     }
-    db.settings = (await c.query('SELECT key, value FROM settings ORDER BY key')).rows;
-    db.seq = (await c.query('SELECT key, value FROM seq ORDER BY key')).rows;
-    const modRows = (await c.query(`SELECT value FROM seq WHERE key = 'mod'`)).rows;
+    db.settings = (await c.query(`SELECT key, value FROM ${SQL.settings} ORDER BY key`)).rows;
+    db.seq = (await c.query(`SELECT key, value FROM ${SQL.seq} ORDER BY key`)).rows;
+    const modRows = (await c.query(`SELECT value FROM ${SQL.seq} WHERE key = 'mod'`)).rows;
     return { ok: true, db, rev: modRows.length ? Number(modRows[0].value) : 0 };
   } finally {
     await c.end();
@@ -68,7 +69,7 @@ async function getRev() {
   const c = client();
   await c.connect();
   try {
-    const r = await c.query(`SELECT value FROM seq WHERE key = 'mod'`);
+    const r = await c.query(`SELECT value FROM ${SQL.seq} WHERE key = 'mod'`);
     return { ok: true, rev: r.rows.length ? Number(r.rows[0].value) : 0 };
   } finally {
     await c.end();
@@ -92,7 +93,7 @@ async function saveChanges(upserts, deletes, settings, seq) {
           .map((col) => `${col}=EXCLUDED.${col}`)
           .join(', ');
         await c.query(
-          `INSERT INTO ${t} (${colList})
+          `INSERT INTO ${SQL[t]} (${colList})
            SELECT ${colList} FROM jsonb_to_recordset($1::jsonb) AS x(${def.types})
            ON CONFLICT (${def.pk}) DO UPDATE SET ${setClause}`,
           [j]
@@ -100,28 +101,28 @@ async function saveChanges(upserts, deletes, settings, seq) {
       }
       const ids = (deletes && deletes[t]) || [];
       if (ids.length) {
-        await c.query(`DELETE FROM ${t} WHERE id = ANY($1::text[])`, [ids.map(String)]);
+        await c.query(`DELETE FROM ${SQL[t]} WHERE id = ANY($1::text[])`, [ids.map(String)]);
       }
     }
 
     for (const s of (settings || [])) {
       if (!s || s.key == null) continue;
       await c.query(
-        `INSERT INTO settings(key, value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value`,
+        `INSERT INTO ${SQL.settings}(key, value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value`,
         [String(s.key), s.value == null ? null : Number(s.value)]
       );
     }
     for (const s of (seq || [])) {
       if (!s || s.key == null) continue;
       await c.query(
-        `INSERT INTO seq(key, value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value`,
+        `INSERT INTO ${SQL.seq}(key, value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value`,
         [String(s.key), s.value == null ? null : Number(s.value)]
       );
     }
 
     const mod = Date.now();
     await c.query(
-      `INSERT INTO seq(key, value) VALUES('mod', $1) ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value`,
+      `INSERT INTO ${SQL.seq}(key, value) VALUES('mod', $1) ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value`,
       [mod]
     );
 
