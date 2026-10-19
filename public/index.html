@@ -345,24 +345,44 @@ async function syncSave(){
   if(savePending){ savePending=false; syncSave(); }
 }
 
-async function apiLoad(){
+async function apiLoad(incremental){
   try{
-    const qs='?userId='+encodeURIComponent(current?current.id:'')+'&type='+encodeURIComponent(current?current.type:'')+'&section='+encodeURIComponent(current?(current.section||''):'');
+    const canInc = incremental===true && current && (DB.tasks||[]).length>0 && DB._syncAt;
+    const since = canInc ? DB._syncAt : 0;
+    const qs='?userId='+encodeURIComponent(current?current.id:'')+'&type='+encodeURIComponent(current?current.type:'')+'&section='+encodeURIComponent(current?(current.section||''):'')+'&since='+since;
     const r=await fetch(API+'/load'+qs);
     if(!r.ok) throw new Error(await r.text());
     const data=await r.json();
-    const db=blankDB();
-    db.users=(data.users||[]).map(userFromRow);
-    db.roles=(data.roles||[]).map(roleFromRow);
-    db.dict=(data.dict||[]).map(dictFromRow);
-    db.tasks=(data.tasks||[]).map(taskFromRow);
-    db.notify=(data.notify||[]).map(notifyFromRow);
-    db.settings={dailyMinutes:480};
-    (data.settings||[]).forEach(s=>{ if(s.key==='dailyMinutes') db.settings.dailyMinutes=+s.value||480; });
-    db.seq=blankDB().seq;
-    (data.seq||[]).forEach(s=>{ db.seq[s.key]=+s.value||0; });
-    db.tomb=(DB&&Array.isArray(DB.tomb))?DB.tomb.slice():[];
-    DB=db; rebuildSynced();
+    if(canInc){
+      DB.users=(data.users||[]).map(userFromRow);
+      DB.roles=(data.roles||[]).map(roleFromRow);
+      DB.dict=(data.dict||[]).map(dictFromRow);
+      DB.settings={dailyMinutes:480};
+      (data.settings||[]).forEach(s=>{ if(s.key==='dailyMinutes') DB.settings.dailyMinutes=+s.value||480; });
+      DB.seq=blankDB().seq;
+      (data.seq||[]).forEach(s=>{ DB.seq[s.key]=+s.value||0; });
+      const tm=new Map((DB.tasks||[]).map(t=>[t.id,t]));
+      (data.tasks||[]).forEach(function(r2){ const t=taskFromRow(r2); tm.set(t.id,t); });
+      DB.tasks=[].concat(Array.from(tm.values()));
+      const nm=new Map((DB.notify||[]).map(n=>[n.id,n]));
+      (data.notify||[]).forEach(function(r2){ const n=notifyFromRow(r2); nm.set(n.id,n); });
+      DB.notify=Array.from(nm.values()).sort((a,b)=>b.at-a.at).slice(0,600);
+      DB._syncAt=data.now||DB._syncAt;
+    }else{
+      const db=blankDB();
+      db.users=(data.users||[]).map(userFromRow);
+      db.roles=(data.roles||[]).map(roleFromRow);
+      db.dict=(data.dict||[]).map(dictFromRow);
+      db.tasks=(data.tasks||[]).map(taskFromRow);
+      db.notify=(data.notify||[]).map(notifyFromRow);
+      db.settings={dailyMinutes:480};
+      (data.settings||[]).forEach(s=>{ if(s.key==='dailyMinutes') db.settings.dailyMinutes=+s.value||480; });
+      db.seq=blankDB().seq;
+      (data.seq||[]).forEach(s=>{ db.seq[s.key]=+s.value||0; });
+      db.tomb=(DB&&Array.isArray(DB.tomb))?DB.tomb.slice():[];
+      DB=db; DB._syncAt=data.now||Date.now();
+    }
+    rebuildSynced();
     try{ localStorage.setItem(LS, JSON.stringify(DB)); }catch(e){}
     loaded=true; API_OK=true; API_ERR=''; restoreSession();
     if(savePending){ savePending=false; syncSave(); }
@@ -372,7 +392,7 @@ async function apiLoad(){
 }
 async function manualSync(){
   toast('Syncing...');
-  const ok=await apiLoad();
+  const ok=await apiLoad(true);
   if(ok){ render(); toast('Up to date.'); }
   else toast('Sync failed - '+(API_ERR||'server error'));
 }
@@ -2212,7 +2232,7 @@ load();
 restoreSession();
 render();
 if(typeof apiLoad==='function') apiLoad().then(function(ok){ if(ok) render(); });
-setInterval(function(){ if(current && typeof apiLoad==='function' && !saving) apiLoad().then(function(ok){ if(ok) render(); }); }, 1800000);
+setInterval(function(){ if(current && typeof apiLoad==='function' && !saving) apiLoad(true).then(function(ok){ if(ok) render(); }); }, 1800000);
 
 
 
