@@ -273,9 +273,11 @@ function blankDB(){
 let DB;
 function load(){ try{ const raw=localStorage.getItem(LS); DB=raw?JSON.parse(raw):blankDB(); }catch(e){ DB=blankDB(); } if(!DB.seq) DB.seq=blankDB().seq; if(!DB.settings) DB.settings={dailyMinutes:480}; }
 
-/* ---- Backend: local API server backed by ARL Postgres (ACCL schema) ---- */
+/* ---- Backend: API -> ARL Postgres (ACCL) with fast delta sync ---- */
 const API='/api';
 let loaded=false, saving=false, savePending=false, saveTimer=null, API_OK=false, API_ERR='';
+const SYNCED={users:{},roles:{},dict:{},tasks:{},notify:{},_settings:null,_seq:null};
+
 const eMs=v=>v?new Date(v).getTime():0;
 const eIso=n=>n?new Date(+n).toISOString():null;
 const userFromRow=r=>({id:r.id,enroll:r.enroll==null?'':String(r.enroll),name:r.name||'',section:r.section||'',role:r.role||'',type:r.type||'member',status:r.status||'pending',updatedAt:eMs(r.updated_at)});
@@ -284,6 +286,18 @@ const dictFromRow=d=>({id:d.id,section:d.section,role:d.role,title:d.title,estMi
 const taskFromRow=t=>({id:t.id,code:t.code,title:t.title,desc:t.description||'',section:t.section,role:t.role,assigneeId:t.assignee_id,supervisorId:t.supervisor_id,estMin:+t.est_min||0,actualMin:+t.actual_min||0,priority:t.priority,shift:t.shift,dueDate:t.due_date?String(t.due_date).slice(0,10):'',frequency:t.frequency,status:t.status,createdAt:eMs(t.created_at),updatedAt:eMs(t.updated_at),timerStart:t.timer_start?+t.timer_start:null,attachments:t.attachments||[],comments:t.comments||[],cross:!!t.is_cross,assignedById:t.assigned_by_id,assignedByName:t.assigned_by_name,fromSection:t.from_section});
 const notifyFromRow=n=>({id:n.id,at:eMs(n.at),to:n.to_user,title:n.title,body:n.body,read:!!n.is_read});
 
+const ROWTO={
+  users:u=>({id:u.id,enroll:u.enroll==null?null:String(u.enroll),name:u.name||'',section:u.section||null,role:u.role||null,type:u.type||'member',status:u.status||'pending'}),
+  roles:r=>({id:r.id,section:r.section,name:r.name}),
+  dict:d=>({id:d.id,section:d.section,role:d.role,title:d.title,estMin:+d.estMin||0,priority:d.priority,frequency:d.frequency}),
+  tasks:t=>({id:t.id,code:t.code,title:t.title,desc:t.desc,section:t.section,role:t.role,assigneeId:t.assigneeId,supervisorId:t.supervisorId,estMin:+t.estMin||0,actualMin:+t.actualMin||0,priority:t.priority,shift:t.shift,dueDate:t.dueDate,frequency:t.frequency,status:t.status,createdAt:t.createdAt,updatedAt:t.updatedAt,timerStart:t.timerStart,attachments:t.attachments||[],comments:t.comments||[],cross:!!t.cross,assignedById:t.assignedById,assignedByName:t.assignedByName,fromSection:t.fromSection}),
+  notify:n=>({id:n.id,at:n.at,to:n.to,title:n.title,body:n.body,read:!!n.read})
+};
+const sig=o=>JSON.stringify(o);
+function rebuildSynced(){
+  ['users','roles','dict','tasks','notify'].forEach(tbl=>{ const m={}; (DB[tbl]||[]).forEach(it=>{ m[String(it.id)]=sig(ROWTO[tbl](it)); }); SYNCED[tbl]=m; });
+  SYNCED._settings=JSON.stringify(DB.settings||{}); SYNCED._seq=JSON.stringify(DB.seq||{});
+}
 function setSyncStatus(s){
   const el=document.getElementById('syncState'); if(!el) return;
   const t=new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
@@ -296,7 +310,7 @@ function save(){
   if((DB.users||[]).length===0 && (DB.tasks||[]).length===0) return;
   setSyncStatus('saving');
   clearTimeout(saveTimer);
-  saveTimer=setTimeout(syncSave, 300);
+  saveTimer=setTimeout(syncSave, 400);
 }
 function tombstone(id){ if(!id) return; if(!Array.isArray(DB.tomb)) DB.tomb=[];
   if(!DB.tomb.some(x=>x.id===id)) DB.tomb.push({id:id, at:Date.now()}); }
@@ -306,10 +320,25 @@ async function syncSave(){
   if(saving){ savePending=true; return; }
   saving=true; setSyncStatus('saving');
   try{
-    const body={users:DB.users,roles:DB.roles,dict:DB.dict,tasks:DB.tasks,notify:DB.notify,settings:DB.settings,seq:DB.seq,tomb:DB.tomb};
-    const r=await fetch(API+'/sync',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(!r.ok) throw new Error(await r.text());
-    DB.tomb=[];
+    const ups={users:[],roles:[],dict:[],tasks:[],notify:[]};
+    const next={};
+    ['users','roles','dict','tasks','notify'].forEach(tbl=>{
+      const m={};
+      (DB[tbl]||[]).forEach(it=>{ const k=String(it.id); const s=sig(ROWTO[tbl](it)); m[k]=s; if(SYNCED[tbl][k]!==s) ups[tbl].push(it); });
+      next[tbl]=m;
+    });
+    const settingsSig=JSON.stringify(DB.settings||{});
+    const seqSig=JSON.stringify(DB.seq||{});
+    const nChanged=ups.users.length+ups.roles.length+ups.dict.length+ups.tasks.length+ups.notify.length;
+    const changed=nChanged>0 || (DB.tomb||[]).length>0 || settingsSig!==SYNCED._settings || seqSig!==SYNCED._seq;
+    if(changed){
+      const body={users:ups.users,roles:ups.roles,dict:ups.dict,tasks:ups.tasks,notify:ups.notify,settings:DB.settings,seq:DB.seq,tomb:DB.tomb};
+      const r=await fetch(API+'/sync',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(!r.ok) throw new Error(await r.text());
+      ['users','roles','dict','tasks','notify'].forEach(k=>SYNCED[k]=next[k]);
+      SYNCED._settings=settingsSig; SYNCED._seq=seqSig;
+      DB.tomb=[];
+    }
     API_OK=true; API_ERR='';
   }catch(e){ API_OK=false; API_ERR=String((e&&e.message)||e); }
   saving=false; setSyncStatus(API_OK?'saved':'error');
@@ -333,7 +362,7 @@ async function apiLoad(){
     db.seq=blankDB().seq;
     (data.seq||[]).forEach(s=>{ db.seq[s.key]=+s.value||0; });
     db.tomb=(DB&&Array.isArray(DB.tomb))?DB.tomb.slice():[];
-    DB=db;
+    DB=db; rebuildSynced();
     try{ localStorage.setItem(LS, JSON.stringify(DB)); }catch(e){}
     loaded=true; API_OK=true; API_ERR=''; restoreSession();
     if(savePending){ savePending=false; syncSave(); }
